@@ -1,0 +1,49 @@
+[device]
+codename = "venus"
+brand = "Xiaomi"
+model = "Xiaomi 11"
+ab = true
+soc = { hans = "骁龙 888 移动平台", hant = "Snapdragon® 888 行動平台", en = "Snapdragon® 888 Mobile Platform" }
+os_version_prop = "ro.mi.os.version.incremental"
+
+[display]
+# The system starts in the lower mode of the panel: 1080 by 2400 at 420.
+width = 1080
+height = 2400
+density = 420
+diagonal = 6.81
+
+[modules]
+sources = ["vendor_boot", "vendor_dlkm", "vendor"]
+# The touchscreen: ST/FocalTech over SPI, with xiaomi_touch's own node and
+# the goodix under-display fingerprint driver beside it.
+load = ["xiaomi_touch", "fts_touch_spi_k2"]
+
+# venus is a virtual A/B phone with no recovery partition of its own: its
+# recovery ramdisk lives inside boot. The base here is the phone's own boot_a
+# as it was dumped from the device, holding the TWRP recovery ramdisk its
+# owner already runs (init, adbd, SELinux policy and libraries all present).
+[stock]
+version = "OS3.0.315.0.WPBCNXM+twrp"
+image = "https://github.com/cvbyisme/skyward-venus/releases/download/stock-venus/stock-venus-boot.zip"
+recovery = "7e8cbf08c9c87147de28f7a254e1e608fb4e6b2d9b9ef603111417195b0f58b3"
+# The ramdisk is a third-party one (TWRP), which the packer refuses unless
+# told to build on it anyway.
+third_party = true
+# The AVB footer names the partition the image fills, which is boot here.
+partition = "boot"
+
+[wlan]
+modules = ["qca_cld3_qca6390"]
+writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
+firmware = [
+    { name = "wlan/qca_cld/qca6390/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/qca6390/WCNSS_qcom_cfg.ini" },
+]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/vendor/lib64", "/system/lib64"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connect.rom.miui.com/generate_204"
+
+[update]
+server = "https://update.miui.com/updates/miotaV3.php"
