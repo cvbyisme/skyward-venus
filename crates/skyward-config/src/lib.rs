@@ -94,9 +94,23 @@ pub struct Stock {
     /// The build's version, such as OS4.0.4.0.XPACNXM.
     pub version: String,
     /// Where the package is downloaded from, over HTTPS.
+    #[serde(default)]
     pub package: String,
     /// The recovery partition's SHA-256, in lowercase hex.
+    #[serde(default)]
     pub recovery: String,
+    /// An image to build on instead of taking a partition out of a package,
+    /// for phones whose recovery lives inside another partition.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Whether that image is a third-party recovery, which the packer
+    /// otherwise refuses to build on.
+    #[serde(default)]
+    pub third_party: bool,
+    /// The partition whose AVB footer the built image ends in: the recovery
+    /// partition, unless the configuration names another.
+    #[serde(default)]
+    pub partition: Option<String>,
 }
 
 /// What brings the phone's WLAN up inside a recovery, which loads none of
