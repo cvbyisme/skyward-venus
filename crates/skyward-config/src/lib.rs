@@ -586,6 +586,14 @@ impl DeviceConfig {
             }
         }
         if let Some(stock) = &cfg.stock {
+            // A phone whose recovery lives inside another partition is built
+            // on an image named outright, which no full package holds.
+            if let Some(image) = &stock.image {
+                ensure!(
+                    image.starts_with("https://") || image.starts_with('/'),
+                    "[stock] image: {image} is neither an HTTPS address nor a path on this computer"
+                );
+            } else {
             let name = stock.package.rsplit('/').next().unwrap_or_default();
             ensure!(
                 stock.package.starts_with("https://") && name.ends_with(".zip") && name.contains(&stock.version) && !stock.version.is_empty(),
@@ -593,6 +601,7 @@ impl DeviceConfig {
                 stock.package,
                 stock.version
             );
+            }
             ensure!(
                 stock.recovery.len() == 64 && stock.recovery.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
                 "[stock] recovery: {} is not a SHA-256 in lowercase hex",
