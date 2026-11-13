@@ -109,13 +109,17 @@ fn main() -> Result<()> {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
+            let device_config = skyward_config::DeviceConfig::load(&config)?;
+            let stock_config = device_config.stock.clone();
             // A stock recovery ramdisk has no third-party tree; refuse to build
-            // on top of another custom recovery.
-            if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
-                anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
+            // on top of another custom recovery, unless the phone has none of
+            // its own and the configuration names another as its base.
+            if !stock_config.as_ref().map(|s| s.third_party).unwrap_or(false) {
+                if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
+                    anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
+                }
             }
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
-            skyward_config::DeviceConfig::load(&config)?;
             rd.replace(paths::RECOVERY, read(&binary)?)?;
             // Install scripts look for the commands a stock recovery lacks
             // among its programs, and its unzip there too, a link to ziptool
@@ -150,10 +154,18 @@ fn main() -> Result<()> {
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode()?;
             let bytes = img.to_bytes()?;
-            write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
+            let partition = stock_config.and_then(|s| s.partition).unwrap_or_else(|| "recovery".to_string());
+            write(&out, &img, &avb::footed(&bytes, &partition, size, &Sha256::digest(&bytes))?)
         }
         Cmd::Stock { config, out } => {
             let stock = skyward_config::DeviceConfig::load(&config)?.stock.with_context(|| format!("{} names no stock build", config.display()))?;
+            if let Some(image) = stock.image.clone() {
+                println!("version={}\npackage={}\nrecovery={}", stock.version, image, stock.recovery);
+                return match out {
+                    Some(out) => take_image(&image, &stock.recovery, &out),
+                    None => Ok(()),
+                };
+            }
             println!("version={}\npackage={}\nrecovery={}", stock.version, stock.package, stock.recovery);
             match out {
                 Some(out) => take_stock_recovery(&stock, &out),
@@ -165,6 +177,60 @@ fn main() -> Result<()> {
 
 /// The partition a recovery is made on, as a full update package names it.
 const RECOVERY: &str = "recovery";
+
+/// Take the image to build on from where the configuration names it: over
+/// HTTPS, or a path on this computer, unzipped when it is a zip, and checked
+/// against the SHA-256 the configuration names.
+fn take_image(image: &str, recovery: &str, out: &Path) -> Result<()> {
+    let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
+    let work = tempfile::Builder::new().prefix(".stock").tempdir_in(parent).with_context(|| format!("make a folder in {}", parent.display()))?;
+    let taken = work.path().join("stock.img");
+    if image.starts_with("http://") || image.starts_with("https://") {
+        let status = std::process::Command::new("curl")
+            .args(["-L", "-sS", "-o"])
+            .arg(&taken)
+            .arg(image)
+            .status()
+            .with_context(|| format!("run curl for {image}"))?;
+        ensure!(status.success(), "curl could not take {image}");
+    } else {
+        std::fs::copy(image, &taken).with_context(|| format!("copy {image}"))?;
+    }
+    let mut magic = [0u8; 4];
+    {
+        let mut f = std::fs::File::open(&taken).with_context(|| format!("open {}", taken.display()))?;
+        f.read_exact(&mut magic).with_context(|| format!("read {}", taken.display()))?;
+    }
+    let taken = if &magic == b"PK\x03\x04" {
+        let dir = work.path().join("unzipped");
+        std::fs::create_dir_all(&dir).with_context(|| format!("make {}", dir.display()))?;
+        let status = std::process::Command::new("unzip")
+            .args(["-o", "-q"])
+            .arg(&taken)
+            .arg("-d")
+            .arg(&dir)
+            .status()
+            .with_context(|| format!("run unzip for {image}"))?;
+        ensure!(status.success(), "unzip could not take {image} apart");
+        let images: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .with_context(|| format!("list {}", dir.display()))?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|e| e == "img").unwrap_or(false))
+            .collect();
+        ensure!(images.len() == 1, "{image} holds {} images, where one is expected", images.len());
+        images.into_iter().next().expect("one image")
+    } else {
+        taken
+    };
+    let bytes = std::fs::read(&taken).with_context(|| format!("read {}", taken.display()))?;
+    let sum: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    ensure!(sum == recovery, "the image {image} has the SHA-256 {sum}, where the configuration names {recovery}");
+    std::fs::rename(&taken, out).with_context(|| format!("move {} to {}", taken.display(), out.display()))?;
+    println!("wrote {} ({} bytes), its SHA-256 the one the configuration names", out.display(), bytes.len());
+    Ok(())
+}
 
 /// Take the recovery partition out of the stock build's full update package
 /// on its server, reading only what that partition takes of it, and write it
