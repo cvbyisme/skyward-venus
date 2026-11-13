@@ -156,6 +156,13 @@ fn main() -> Result<()> {
                 .data;
             let mut props = without(stock_props, &BUILD_VERSION);
             props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
+            // A phone whose recovery lives in boot is handed to a bootloader
+            // that marks every image it loads as a normal boot; init reads
+            // this file before the command line and will not take the same
+            // name again, so the recovery is what starts.
+            if stock_config.as_ref().map(|s| s.third_party).unwrap_or(false) {
+                props.extend_from_slice(b"ro.boot.force_normal_boot=0\n");
+            }
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode()?;
             let bytes = img.to_bytes()?;
