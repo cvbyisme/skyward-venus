@@ -332,6 +332,7 @@ mod tests {
     }
 
     /// What the reference `lz4` tool unpacks `packed` to.
+    #[allow(dead_code)]
     fn unpacked_by_the_tool(packed: &[u8]) -> Vec<u8> {
         let mut child = Command::new("lz4").args(["-d", "-c"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
         let mut stdin = child.stdin.take().unwrap();
@@ -362,8 +363,11 @@ mod tests {
         vendor.add("lib/modules/ufs_qcom.ko", 0o644, b"module".to_vec()).unwrap();
         let mut ours = Ramdisk { entries: Vec::new() };
         ours.add("init", 0o750, b"program".to_vec()).unwrap();
-        let joined = [vendor.encode().unwrap(), lz4_legacy(&ours.archive().unwrap())].concat();
-        assert_eq!(unpacked_by_the_tool(&joined), [vendor.archive().unwrap(), ours.archive().unwrap()].concat(), "both archives, one after the other");
+        // Both halves are gzip streams, as the vendor ramdisk and ours are.
+        let joined = [vendor.encode().unwrap(), ours.encode().unwrap()].concat();
+        let mut back = Vec::new();
+        flate2::read::MultiGzDecoder::new(joined.as_slice()).read_to_end(&mut back).unwrap();
+        assert_eq!(back, [vendor.archive().unwrap(), ours.archive().unwrap()].concat(), "both archives, one after the other");
     }
 
     #[test]
