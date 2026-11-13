@@ -17,8 +17,9 @@ kernel_size, ramdisk_size = struct.unpack("<II", data[8:16])
 header_version = struct.unpack("<I", data[40:44])[0]
 if header_version < 3:
     sys.exit(f"{path} has header version {header_version}, which predates the layout read here")
-header_size = struct.unpack("<I", data[20:24])[0]
-off = ((4096 + kernel_size + 4095) // 4096) * 4096 + header_size
+# The header fills the first 4096 bytes; the kernel follows it, and the
+# ramdisk the kernel, at the next 4096 boundary.
+off = ((4096 + kernel_size + 4095) // 4096) * 4096
 ramdisk = bytes(data[off:off + ramdisk_size])
 if ramdisk[:4] == b"\x02\x21\x4c\x18":
     print("the stock ramdisk is already LZ4 legacy")
