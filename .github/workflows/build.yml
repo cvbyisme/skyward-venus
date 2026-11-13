@@ -119,6 +119,13 @@ jobs:
         env:
           RECOVERY: ${{ steps.stock.outputs.recovery }}
         run: echo "$RECOVERY  stock/recovery.img" | sha256sum --check
+      # The packer writes the ramdisk it builds with the reference lz4, in
+      # the legacy framing the kernel reads.
+      - name: Install lz4
+        if: matrix.device == 'venus'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lz4
       - name: Pack the recovery
         id: pack
         env:
