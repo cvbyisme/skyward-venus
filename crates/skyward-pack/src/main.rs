@@ -126,6 +126,11 @@ fn main() -> Result<()> {
             // until it points here; the recovery binary is each of them.
             let (_, recovery) = paths::RECOVERY.rsplit_once('/').expect("the recovery binary is in a folder");
             for command in paths::COMMANDS {
+                // A third-party ramdisk may carry one of these as a program
+                // of its own, which Skyward answers itself.
+                if rd.find(command).map(|e| e.mode & 0o170000 != 0o120000).unwrap_or(false) {
+                    rd.entries.retain(|e| e.name != command);
+                }
                 rd.link(command, recovery)?;
             }
             rd.add(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
