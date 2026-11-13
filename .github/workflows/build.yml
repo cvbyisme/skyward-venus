@@ -119,20 +119,6 @@ jobs:
         env:
           RECOVERY: ${{ steps.stock.outputs.recovery }}
         run: echo "$RECOVERY  stock/recovery.img" | sha256sum --check
-      # venus has no recovery partition of its own: its base is a whole boot
-      # image whose ramdisk TWRP left gzip, which the packer reads only as
-      # LZ4 in the legacy framing.
-      - name: Compress the stock ramdisk the way the packer reads it
-        if: matrix.device == 'venus'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq lz4
-          python3 .github/scripts/gzip-to-lz4.py stock/recovery.img
-      - name: Say what the ramdisk looks like (venus)
-        if: matrix.device == 'venus'
-        run: |
-          python3 -c "import struct;d=open('stock/recovery.img','rb').read();ks,rs=struct.unpack('<II',d[8:16]);print('kernel',ks,'ramdisk',rs,'header_version',struct.unpack('<I',d[40:44])[0]);off=((4096+ks+4095)//4096)*4096;print('ramdisk at',off,d[off:off+8].hex())"
-          tools/skyward-pack list stock/recovery.img | head -3
       - name: Pack the recovery
         id: pack
         env:
