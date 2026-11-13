@@ -84,11 +84,16 @@ impl Ramdisk {
         Ok(Ramdisk { entries })
     }
 
-    /// Pack as a newc archive compressed the way AOSP packs boot ramdisks,
-    /// with the reference `lz4` tool in legacy framing (the kernel's initramfs
-    /// unpacker reads no other LZ4 framing) at its highest compression.
+    /// Pack as a newc archive compressed the way the phone's own boot ramdisk
+    /// is: gzip. Its kernel unpacks that as it always has, where it may not
+    /// have been built with LZ4 at all.
     pub fn encode(&self) -> Result<Vec<u8>> {
-        lz4_tool(&self.archive()?)
+        let archive = self.archive()?;
+        let mut out = Vec::new();
+        let mut encoder = flate2::write::GzEncoder::new(&mut out, flate2::Compression::best());
+        encoder.write_all(&archive).context("gzip the archive")?;
+        encoder.finish().context("finish the gzip stream")?;
+        Ok(out)
     }
 
     /// Pack as a newc archive, uncompressed.
@@ -279,6 +284,7 @@ pub fn lz4_legacy(input: &[u8]) -> Vec<u8> {
     out
 }
 
+#[allow(dead_code)]
 fn lz4_tool(input: &[u8]) -> Result<Vec<u8>> {
     let mut child = Command::new("lz4")
         .args(["-l", "-12", "--favor-decSpeed", "-c"])
