@@ -802,20 +802,15 @@ fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
 /// The phone's own small partition of settings, by the name its table
 /// reaches it by and where that table mounts it, and the file the log is
 /// kept in on it.
-#[cfg(target_os = "android")]
 const PERSIST: &str = "persist";
-#[cfg(target_os = "android")]
 const PERSIST_BY_NAME: &str = "/dev/block/by-name/persist";
-#[cfg(target_os = "android")]
 const PERSIST_AT: &str = "/persist";
-#[cfg(target_os = "android")]
 const PERSIST_LOG: &str = "skyward.log";
 
 /// Keep the log on the phone's partition of settings, mounted here for it
 /// alone, so that a run that ends badly can still be read once the phone
 /// restarts. A phone whose partition will not mount keeps only the log in
 /// the ramdisk, and says so in the kernel log.
-#[cfg(target_os = "android")]
 fn keep_log_on_the_phone() {
     let at = Path::new(PERSIST_AT);
     if std::fs::create_dir_all(at).is_err() {
