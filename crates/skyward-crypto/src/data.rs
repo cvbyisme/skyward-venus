@@ -215,6 +215,12 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
         true => None,
         false => Some(open(service)?),
     };
+    // A phone that encrypts no file at all names no directory for the key of
+    // each file and holds none: nothing is let in, and what the partition
+    // holds reads as it is.
+    if !Path::new(FILE_MODE).exists() {
+        return Ok(Opening { mounted, closed: Vec::new() });
+    }
     open_shared(service)?;
     let mut closed = Vec::new();
     let mut owner = Note::default();

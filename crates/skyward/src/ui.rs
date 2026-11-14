@@ -1084,7 +1084,19 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
         | Work::SwitchSystem { .. }
         | Work::SystemStopped => start,
     };
-    let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
+    // The panel can come up in a mode of another size than the one the
+    // configuration names, as this one does at 1080 by 2400 of a 1440 by
+    // 3200 panel; the pages are laid out against the named size, so the
+    // density follows the panel's own width and they look the same either way.
+    let scale = match cfg.display.width {
+        0 => 1.0,
+        named => w as f32 / named as f32,
+    };
+    let _ = skyward_sys::kmsg(&format!(
+        "the panel runs at {w}x{h}, the configuration names {}x{} at {}; the pages are laid out at {:.3} to the device pixel",
+        cfg.display.width, cfg.display.height, cfg.display.density, scale
+    ));
+    let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0 * scale);
     app.set_screen_corners(cfg.display.corner_radius as f32);
     // The settings kept from the starts before are back before the first
     // frame, and before file transfer starts with its switch and the time
@@ -1352,16 +1364,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let wlan = match &cfg.wlan {
         Some(w) => {
             app.state.wlan = Some(Wlan::default());
-            // The wireless driver belongs to the installed vendor image, so
-            // the vendor partitions are read before the recovery's own
-            // ramdisk: a ramdisk built for another phone carries a driver for
-            // another chip, which probes the hardware, finds a device its
-            // platform does not know, and fails to load -- which is what the
-            // wireless interface then reports as a driver that will not come
-            // up.
-            let mut sources = cfg.modules.sources.clone();
-            sources.sort_by_key(|s| !matches!(s.as_str(), "vendor" | "vendor_dlkm"));
-            let modules = sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
+            let modules = cfg.modules.sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
             let libraries = secure::libraries().unwrap_or_else(|e| {
                 let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
                 None
