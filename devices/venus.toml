@@ -54,14 +54,23 @@ ready_hardware_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
 user = "system"
 groups = ["system"]
 # The directory the phone's hardware services of the older kind register
-# with, which a recovery does not carry: this is the installed system's own
-# program, against the installed system's own libraries.
+# with is the recovery's own: this ramdisk carries one in /system/bin, its
+# init starts it, and it is the one the HALs below register with. A second
+# copy of the installed system's own cannot take over as the directory --
+# the first one already is -- so it starts, is refused, and is started
+# again, once a second, for as long as the recovery runs. Nothing here asks
+# for it.
+#
+# The key service: the secure world wraps every key the phone keeps, and
+# only this program can use one. venus is an Android 13 phone, whose key
+# service of the older kind is 4.1; the installed system describes none of
+# the newer kind, so this is the only way to a key here.
 [[service]]
-path = "/mnt/system_ext/bin/hwservicemanager"
-libraries = ["/mnt/system/lib64", "/mnt/system_ext/lib64"]
-ready_property = "hwservicemanager.ready"
+path = "/vendor/bin/hw/android.hardware.keymaster@4.1-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_hardware_service = "android.hardware.keymaster@4.1::IKeymasterDevice/default"
 user = "system"
-groups = ["system", "readproc"]
+groups = ["system", "drmrpc"]
 # The boot control, which says which slot the bootloader starts next and
 # switches it, writing where the bootloader reads it. This phone's own
 # service is version 1.1 of the older kind.
