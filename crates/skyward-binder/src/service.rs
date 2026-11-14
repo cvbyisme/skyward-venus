@@ -131,7 +131,15 @@ pub fn declared(binder: &crate::driver::Binder, name: &str) -> Result<bool> {
     let directory = binder.directory()?;
     let mut call = Parcel::call(DIRECTORY);
     call.string(name);
-    let reply = directory.transact(methods()?.is_declared, &call).with_context(|| format!("ask whether {name} is described"))?;
+    let reply = match directory.transact(methods()?.is_declared, &call) {
+        Ok(reply) => reply,
+        // A directory built before the method numbering this program reads
+        // answers the question with nothing the driver can carry, rather
+        // than with a no: a recovery started over an older vendor partition
+        // has one. That is taken as no description, so that a hardware
+        // service of the older kind is looked for instead.
+        Err(_) => return Ok(false),
+    };
     let mut read = reply.read();
     status::ok(&mut read).with_context(|| format!("ask whether {name} is described"))?;
     read.bool().with_context(|| format!("read whether {name} is described"))
