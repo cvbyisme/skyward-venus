@@ -7,13 +7,10 @@ soc = { hans = "骁龙 888 移动平台", hant = "Snapdragon® 888 行動平台"
 os_version_prop = "ro.mi.os.version.incremental"
 
 [display]
-# The panel's own mode in the device tree, which is the mode the driver
-# boots with: the k2 panel is 1440 by 3200, and the pages are laid out on
-# it at the density of the system's own scaled-up mode, 560, which comes to
-# the 1080 by 2400 at 420 mode the system starts in.
-width = 1440
-height = 3200
-density = 560
+# The system starts in the lower mode of the panel: 1080 by 2400 at 420.
+width = 1080
+height = 2400
+density = 420
 diagonal = 6.81
 
 [modules]
@@ -36,50 +33,6 @@ third_party = true
 # The AVB footer names the partition the image fills, which is boot here.
 partition = "boot"
 
-# The secure world reaches back into Android through the listeners this
-# daemon registers; without them no key can be used.
-[[service]]
-path = "/vendor/bin/qseecomd"
-libraries = ["/system/lib64", "/vendor/lib64"]
-ready_property = "vendor.sys.listeners.registered"
-user = "root"
-groups = ["root", "drmrpc"]
-# The credential service: the secure world has it check a screen lock, and
-# it is the only thing that hands out the note the key service wants before
-# it uses a key a screen lock guards.
-[[service]]
-path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
-libraries = ["/system/lib64", "/vendor/lib64"]
-ready_hardware_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
-user = "system"
-groups = ["system"]
-# The directory the phone's hardware services of the older kind register
-# with is the recovery's own: this ramdisk carries one in /system/bin, its
-# init starts it, and it is the one the HALs below register with. A second
-# copy of the installed system's own cannot take over as the directory --
-# the first one already is -- so it starts, is refused, and is started
-# again, once a second, for as long as the recovery runs. Nothing here asks
-# for it.
-#
-# The key service: the secure world wraps every key the phone keeps, and
-# only this program can use one. venus is an Android 13 phone, whose key
-# service of the older kind is 4.1; the installed system describes none of
-# the newer kind, so this is the only way to a key here.
-[[service]]
-path = "/vendor/bin/hw/android.hardware.keymaster@4.1-service-qti"
-libraries = ["/system/lib64", "/vendor/lib64"]
-ready_hardware_service = "android.hardware.keymaster@4.1::IKeymasterDevice/default"
-user = "system"
-groups = ["system", "drmrpc"]
-# The boot control, which says which slot the bootloader starts next and
-# switches it, writing where the bootloader reads it. This phone's own
-# service is version 1.1 of the older kind.
-[[service]]
-path = "/vendor/bin/hw/android.hardware.boot@1.1-service"
-libraries = ["/system/lib64", "/vendor/lib64"]
-ready_hardware_service = "android.hardware.boot@1.1::IBootControl/default"
-user = "root"
-groups = ["root"]
 [wlan]
 modules = ["qca_cld3_qca6390"]
 writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
@@ -94,3 +47,57 @@ probe = "http://connect.rom.miui.com/generate_204"
 
 [update]
 server = "https://update.miui.com/updates/miotaV3.php"
+
+# The settings partition the phone keeps its own small state in; the recovery
+# mounts it where the phone does, as its bootloader hand-off is read there.
+[partitions]
+mounted = ["persist"]
+
+# The secure world reaches back into Android through the listeners this
+# daemon registers; without them the key service cannot use any key.
+[[service]]
+path = "/vendor/bin/qseecomd"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_property = "vendor.sys.listeners.registered"
+user = "root"
+groups = ["root", "drmrpc"]
+
+# The directory the phone's hardware services of the older kind register
+# with. A recovery carries none of it, so it is the installed system's own,
+# which reads the descriptions in /vendor/etc/vintf.
+[[service]]
+path = "/mnt/system_ext/bin/hwservicemanager"
+libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/mnt/system_ext/lib64"]
+ready_property = "hwservicemanager.ready"
+user = "system"
+groups = ["system", "readproc"]
+
+# The credential service: it is what the secure world has check a screen
+# lock, and the only thing that can hand out the note the key service wants
+# before it will use a key that secret guards.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_hardware_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
+user = "system"
+groups = ["system"]
+
+# The key service, which is the only thing that can use the keys the phone
+# wrapped in hardware: the one that opens the data partition.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.keymaster@4.1-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_hardware_service = "android.hardware.keymaster@4.1::IKeymasterDevice/default"
+user = "system"
+groups = ["system", "drmrpc"]
+
+# The boot control, which says which slot the bootloader starts next and
+# switches it, writing where the bootloader reads it. This phone's build of
+# the hardware carries the older kind of it, at the version that came before
+# the one that also tells where an update stands.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.boot@1.1-service"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_hardware_service = "android.hardware.boot@1.1::IBootControl/default"
+user = "root"
+groups = ["root"]

@@ -4,8 +4,19 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Where the phone's own partitions keep the table.
-pub const FILES: [&str; 2] = ["/vendor/etc/fstab.qcom", "/odm/etc/fstab.qcom"];
+/// Where the phone's own partitions keep the table. Phones differ in what
+/// they name it: the newer ones name it after the platform, `fstab.qcom`;
+/// others name it after the boot mode init picked it in, `fstab.default` or
+/// `fstab.emmc`. One of them is the phone's whole table, so the first that
+/// is here and names anything is the one read.
+pub const FILES: [&str; 6] = [
+    "/vendor/etc/fstab.qcom",
+    "/odm/etc/fstab.qcom",
+    "/vendor/etc/fstab.default",
+    "/odm/etc/fstab.default",
+    "/vendor/etc/fstab.emmc",
+    "/odm/etc/fstab.emmc",
+];
 
 /// One filesystem the phone knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,16 +64,20 @@ pub fn entries(text: &str) -> Vec<Entry> {
 
 /// Every entry of the phone's own table, read from wherever the table is.
 fn table() -> Result<Vec<Entry>> {
-    let mut out = Vec::new();
+    // Whichever file the phone's init names is the whole table: taking them
+    // all together would name every mount point once per file that has it.
     for file in FILES {
         let text = match std::fs::read_to_string(file) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e).with_context(|| format!("read {file}")),
         };
-        out.extend(entries(&text));
+        let named = entries(&text);
+        if !named.is_empty() {
+            return Ok(named);
+        }
     }
-    Ok(out)
+    Ok(Vec::new())
 }
 
 /// What the phone's own table says about `mount_point`.
