@@ -233,8 +233,13 @@ pub const LOW_BATTERY: u8 = 20;
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
     let m = &t.m;
     let cy = m.status_cy;
+    // The clock sits in the middle of the bar: the hole the camera looks
+    // through is at the left on this phone, and the marks are at the right,
+    // so the middle is the one place clear of both. Measured rather than
+    // placed, since the digits change width as the time goes on.
+    let clock_x = (m.w as f32 - c.text_width(&f.status, bar.clock, m.status_px)) / 2.0;
     // Digits carry no descender, so centre on half their height (≈0.72 em).
-    c.text(&f.status, bar.clock, m.status_x, cy + m.status_px * 0.36, m.status_px, ink, None);
+    c.text(&f.status, bar.clock, clock_x, cy + m.status_px * 0.36, m.status_px, ink, None);
     let mut right = m.w as f32 - m.status_right;
     if let Some((level, charging)) = bar.battery {
         if let Some(kind) = charging {

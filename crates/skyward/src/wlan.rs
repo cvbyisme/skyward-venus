@@ -675,15 +675,42 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
             skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
         }
         for w in &cfg.writes {
-            fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
+            // The switch the phone's own driver waits on is not named the
+            // same in every build of the kernel, and one that is not there
+            // is worth a line of its own rather than the whole WLAN: the
+            // interface may still come up.
+            if let Err(e) = fs::write(&w.path, &w.value) {
+                let _ = skyward_sys::kmsg(&format!("write {} to {}: {e}", w.value, w.path));
+            }
         }
         let until = Instant::now() + INTERFACE_WAIT;
         while !net.exists() {
-            ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
+            if Instant::now() >= until {
+                // What the kernel kept for the chip says whether its driver
+                // is in at all, and what it is waiting on. It differs from
+                // one build to the next, so it is read rather than assumed.
+                let _ = skyward_sys::kmsg(&format!("the kernel's own entries: {}", listing("/sys/kernel")));
+                let drivers = listing("/sys/bus/platform/drivers");
+                let chip: Vec<&str> = drivers.split(' ').filter(|n| n.contains("cnss") || n.contains("wlan") || n.contains("qca") || n.contains("wifi")).collect();
+                let _ = skyward_sys::kmsg(&format!("the chip's drivers: {}", chip.join(" ")));
+                let modules = fs::read_to_string("/proc/modules").map(|m| m.lines().count()).unwrap_or(0);
+                let _ = skyward_sys::kmsg(&format!("{modules} modules are in"));
+                bail!("the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
+            }
             thread::sleep(Duration::from_millis(100));
         }
     }
     iface::set_up(&cfg.interface, true)
+}
+
+/// The names in `dir`, on one line: the kernel's own entries for the chip
+/// are named differently from one build to the next, so they are read.
+fn listing(dir: &str) -> String {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .map(|d| d.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
+        .unwrap_or_default();
+    names.sort();
+    names.join(" ")
 }
 
 /// Put a file the driver asks for where the firmware loader looks.
