@@ -831,7 +831,7 @@ fn keep_log_on_the_phone() {
         }
     }
     if let Err(e) = skyward_sys::keep_log_too(&at.join(PERSIST_LOG)) {
-        let _ = skyward_sys::kmsg(&format!("the log is not kept on {PERSIST_AT}: {e:#}"));
+        let _ = skyward_sys::kmsg(&format!("the log is not kept on the {PERSIST} partition: {e:#}"));
     }
 }
 
