@@ -174,6 +174,14 @@ pub const LOG: &str = "/skyward/run/recovery.log";
 /// The file [`kmsg`] writes its lines to as well, once [`keep_log`] opened
 /// it.
 static KEPT: OnceLock<Mutex<File>> = OnceLock::new();
+/// A second file [`kmsg`] writes its lines to as well, once [`keep_log_too`]
+/// opened it: one on a partition that outlives the phone staying in
+/// recovery, so that a run that ends badly can be read afterwards.
+static ALONG: OnceLock<Mutex<File>> = OnceLock::new();
+
+/// How much of a log already written is copied over when a second file
+/// takes it up.
+const ALONG_BYTES: usize = 1 << 18;
 
 /// Keep every line [`kmsg`] writes from now on in the file at `path` as
 /// well, after what an earlier run left there.
@@ -182,6 +190,25 @@ pub fn keep_log(path: &Path) -> Result<()> {
     KEPT.set(Mutex::new(file)).map_err(|_| anyhow!("the log is kept in a file already"))
 }
 
+/// Keep every line [`kmsg`] writes from now on in the file at `path` as
+/// well, and first what the log holds already, so that a run whose log
+/// would go with the ramdisk can still be read after the phone restarts.
+pub fn keep_log_too(path: &Path) -> Result<()> {
+    if ALONG.get().is_some() {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(path).with_context(|| format!("open {}", path.display()))?;
+    match std::fs::read(LOG) {
+        Ok(held) => {
+            let from = held.len().saturating_sub(ALONG_BYTES);
+            file.write_all(&held[from..]).with_context(|| format!("write {}", path.display()))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("read {LOG}")),
+    }
+    file.flush().with_context(|| format!("write {}", path.display()))?;
+    ALONG.set(Mutex::new(file)).map_err(|_| anyhow!("the log is kept a second time already"))
+}
 /// Append a line to the kernel log, where it survives until the next boot
 /// and shows in `dmesg`, and to the file [`keep_log`] opened, stamped with
 /// the seconds since the phone started as the kernel log stamps it.
@@ -191,6 +218,10 @@ pub fn kmsg(line: &str) -> Result<()> {
     if let Some(kept) = KEPT.get() {
         let mut kept = kept.lock().expect("nothing panics while writing the log");
         writeln!(kept, "[{:>12.6}] {line}", since_boot()?.as_secs_f64()).with_context(|| format!("write {LOG}"))?;
+    }
+    if let Some(along) = ALONG.get() {
+        let mut along = along.lock().expect("nothing panics while writing the log");
+        writeln!(along, "[{:>12.6}] {line}", since_boot()?.as_secs_f64()).with_context(|| format!("write {LOG}"))?;
     }
     Ok(())
 }

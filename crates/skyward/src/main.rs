@@ -510,6 +510,11 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
     }
     for name in &cfg.partitions.mounted {
         let at = skyward_block::fstab::mount(name)?;
+        // The partition of settings may have been mounted for the log
+        // already; this takes the log up again where it mounted instead.
+        if name == PERSIST {
+            let _ = skyward_sys::keep_log_too(&at.join(PERSIST_LOG));
+        }
         skyward_sys::kmsg(&format!("{name} is mounted on {}", at.display()))?;
     }
     for path in load_modules(cfg, &cfg.modules.load)? {
@@ -685,6 +690,11 @@ fn recovery() -> Result<()> {
         std::fs::set_permissions(skyward_sys::RUN, std::fs::Permissions::from_mode(0o755))
             .with_context(|| format!("open {} to the recovery's other users", skyward_sys::RUN))?;
         skyward_sys::keep_log(Path::new(skyward_sys::LOG))?;
+        // The log lives in the ramdisk and goes with it when the phone
+        // restarts, so a copy is kept on the phone's own small partition of
+        // settings, which outlives a stay in recovery and can be read once
+        // the phone is back in its system.
+        keep_log_on_the_phone();
         // A recovery that ended with a function of its own in the port took
         // the port with it; going through "none" takes that function off.
         if skyward_sys::prop("sys.usb.state").is_some_and(|s| s != "adb") {
@@ -787,6 +797,47 @@ fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
         Err(e) => skyward_sys::kmsg(&format!("partitions not mounted: {e:#}"))?,
     }
     Ok(())
+}
+
+/// The phone's own small partition of settings, by the name its table
+/// reaches it by and where that table mounts it, and the file the log is
+/// kept in on it.
+#[cfg(target_os = "android")]
+const PERSIST: &str = "persist";
+#[cfg(target_os = "android")]
+const PERSIST_BY_NAME: &str = "/dev/block/by-name/persist";
+#[cfg(target_os = "android")]
+const PERSIST_AT: &str = "/persist";
+#[cfg(target_os = "android")]
+const PERSIST_LOG: &str = "skyward.log";
+
+/// Keep the log on the phone's partition of settings, mounted here for it
+/// alone, so that a run that ends badly can still be read once the phone
+/// restarts. A phone whose partition will not mount keeps only the log in
+/// the ramdisk, and says so in the kernel log.
+#[cfg(target_os = "android")]
+fn keep_log_on_the_phone() {
+    let at = Path::new(PERSIST_AT);
+    if std::fs::create_dir_all(at).is_err() {
+        return;
+    }
+    match skyward_block::mount::is_mount_point(at) {
+        Ok(true) => {}
+        Ok(false) => {
+            let options = ["noatime".to_string()];
+            if let Err(e) = skyward_block::mount::mount(Path::new(PERSIST_BY_NAME), at, "ext4", &options) {
+                let _ = skyward_sys::kmsg(&format!("{PERSIST_AT} is not mounted for the log: {e:#}"));
+                return;
+            }
+        }
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("{PERSIST_AT} cannot be told apart from a mount point: {e:#}"));
+            return;
+        }
+    }
+    if let Err(e) = skyward_sys::keep_log_too(&at.join(PERSIST_LOG)) {
+        let _ = skyward_sys::kmsg(&format!("the log is not kept on {PERSIST_AT}: {e:#}"));
+    }
 }
 
 fn info(config: &str) -> Result<()> {
