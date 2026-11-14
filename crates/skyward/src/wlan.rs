@@ -27,8 +27,6 @@ use std::time::{Duration, Instant};
 /// write.
 const FIRMWARE: &str = "/etc/firmware";
 
-/// Where a partition a firmware file is read from is mounted meanwhile.
-const PARTITIONS: &str = "/skyward/wlan";
 
 /// The supplicant's settings, and the folder of its control socket, in the
 /// recovery service's own folder.
@@ -696,12 +694,11 @@ fn place(file: &Firmware) -> Result<()> {
     let bytes = match &file.partition {
         None => fs::read(&file.path).with_context(|| format!("read {}", file.path))?,
         Some(partition) => {
-            let at = Path::new(PARTITIONS).join(partition);
-            fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
-            skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
-            let read = fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
-            skyward_block::mount::umount(&at)?;
-            read?
+            // Where the phone's own table mounts the partition it may well be
+            // mounted already, as the settings partition is for the log; mount
+            // asks for it there and takes what is there when it is.
+            let at = skyward_block::fstab::mount(partition).with_context(|| format!("mount {partition}"))?;
+            fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path))?
         }
     };
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
