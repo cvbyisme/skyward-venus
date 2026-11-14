@@ -176,8 +176,12 @@ fn normal_max(max: u32) -> Result<u32> {
         .find(|(normal, _)| node.join(normal).exists())
         .with_context(|| format!("panel {name} gives its normal maximum as none of {NORMAL_MAX:?}"))?;
     let (normal, full) = (cell(normal)?, cell(full)?);
-    ensure!(normal > 0 && normal <= full, "panel {name}: normal maximum {normal} out of {full}");
-    Ok((f64::from(max) * f64::from(normal) / f64::from(full)).round() as u32)
+    ensure!(normal > 0, "panel {name}: normal maximum {normal}");
+    // A panel may give the level on a finer scale than the whole range, as
+    // the Xiaomi 11's does: its factory clone level reaches the whole light,
+    // so its normal maximum is the whole of the backlight's range.
+    let share = (f64::from(normal) / f64::from(full)).min(1.0);
+    Ok((f64::from(max) * share).round() as u32)
 }
 
 /// Leave recovery for the chosen target.
