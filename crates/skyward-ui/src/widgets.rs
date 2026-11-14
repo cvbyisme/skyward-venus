@@ -2866,7 +2866,10 @@ mod tests {
         let f = crate::font::bundled();
         let mut c = Canvas::filled(1200, 160, t.pal.bg);
         let wlan = Some(WlanMark { level: 3, receiving: true, sending: true, speed: "0.00".into(), unit: "KB/s" });
-        let bar = Bar { clock: "01:27", battery: Some((40, None)), wlan, data: Some(false), slot: Some("B"), temp: Some(362) };
+        // No clock: it now stands in the middle of the bar, where this test
+        // reads the marks, so it is left out and the marks alone are told
+        // apart.
+        let bar = Bar { clock: "", battery: Some((40, None)), wlan, data: Some(false), slot: Some("B"), temp: Some(362) };
         status_bar(&mut c, &t, &f, &bar, t.pal.status);
         // Runs of inked columns on the bar's right half, those a few pixels
         // apart taken as one mark.
