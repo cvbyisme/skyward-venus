@@ -228,7 +228,7 @@ impl<'a> BootControl<'a> {
         let what = || format!("have slot {} start next", slot.letter());
         match self {
             BootControl::Newer(c) => newer(c, SET_ACTIVE_SLOT, |p| p.i32(slot.number() as i32), |_| Ok(())).with_context(what),
-            BootControl::Older(c, v) => {
+            BootControl::Older(c, _) => {
                 // The answer is whether it worked, and why not in text it
                 // points at.
                 let why = older(c, FIRST, SET_ACTIVE, |m| m.u32(slot.number()), |r| {
