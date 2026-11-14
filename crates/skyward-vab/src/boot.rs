@@ -122,8 +122,18 @@ impl<'a> BootControl<'a> {
         let mut found = None;
         for (version, _) in HARDWARE_VERSIONS {
             if let Some(control) = hidl::find(hardware, version, INSTANCE)? {
-                found = Some((control, version));
-                break;
+                // A phone may describe a version whose program it does not
+                // carry: the directory then starts what the description
+                // names and hands back what it started, which falls over
+                // before it can answer. A recovery does that, run over a
+                // system of the newer kind whose manifest is carried but
+                // whose program is not: one that says what it serves is
+                // taken, and one that cannot is left for the version after
+                // it.
+                if hidl::describes(&control).is_ok_and(|name| name.contains("IBootControl")) {
+                    found = Some((control, version));
+                    break;
+                }
             }
         }
         let (control, version) = found.with_context(|| not_running(HARDWARE_SERVICE))?;
