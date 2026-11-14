@@ -302,9 +302,7 @@ impl<'a> Answer<'a> {
     /// then the bytes themselves in a buffer of their own. A run with
     /// nothing in it arrives as an address pointing at nothing.
     pub fn pair(&mut self) -> Result<&'a [u8]> {
-        let (count, said) = self.pair_count()?;
-        let _ = count;
-        Ok(said)
+        self.pair_count().map(|(_, said)| said)
     }
     /// The same, with how many of them the frame says there are, for a run
     /// of structures where the count is not simply the length.

@@ -128,7 +128,7 @@ fn params(call: &mut Message, run: &[Param]) {
 /// What a key is bound to is named only where there is something: the secure
 /// world folds the binding into the key it unwraps the blob with, and a
 /// binding to nothing named is not the same to it as none named at all.
-fn gcm_params(app_id: &[u8], nonce: &[u8]) -> Vec<Param<'_>> {
+fn gcm_params<'a>(app_id: &'a [u8], nonce: &'a [u8]) -> Vec<Param<'a>> {
     let mut run = vec![
         Param::Choice(TAG_BLOCK_MODE, BLOCK_MODE_GCM),
         Param::Choice(TAG_PADDING, PADDING_NONE),
