@@ -94,7 +94,7 @@ impl StoredKey {
 
     /// What the phone's key service says the wrapping key may be used for.
     #[cfg(target_os = "android")]
-    pub fn authorizations(&self, service: &crate::keymint::KeyMint) -> Result<Vec<(i32, i64)>> {
+    pub fn authorizations(&self, service: &crate::Service) -> Result<Vec<(i32, i64)>> {
         let blob = self.key_blob.as_ref().context("this key is wrapped by a secret, not by the key service")?;
         service.authorizations(blob, &self.app_id(&[]))
     }

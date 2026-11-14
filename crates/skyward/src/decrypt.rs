@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use skyward_binder::driver::Binder;
 use skyward_crypto::data::{self, Closed, Opening};
-use skyward_crypto::keymint::KeyMint;
+use skyward_crypto::Service;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
@@ -80,10 +80,13 @@ impl Drop for Decryptor {
 
 /// Do `work` with the phone's key service, reached afresh for it, and say
 /// why it failed in words for the page.
-pub fn with_key_service<T>(work: impl FnOnce(&KeyMint) -> Result<T>) -> Result<T, String> {
+pub fn with_key_service<T>(work: impl FnOnce(&Service<'_>) -> Result<T>) -> Result<T, String> {
     let done = (|| {
         let binder = Binder::open()?;
-        let service = KeyMint::open(&binder)?;
+        // The hardware binder is the one an older phone's key service
+        // registers with; a newer phone's is on the ordinary one.
+        let hardware = Binder::hardware()?;
+        let service = Service::open(&binder, &hardware)?;
         work(&service)
     })();
     done.map_err(|e| format!("{e:#}"))

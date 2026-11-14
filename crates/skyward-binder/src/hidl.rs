@@ -65,8 +65,12 @@ impl Message {
     }
 
     /// A run of bytes: the frame that says where they are, then an address
-    /// for the bytes themselves.
+    /// for the bytes themselves. A run with nothing in it is written as a
+    /// frame pointing at nothing, so that what follows it still lines up.
     pub fn bytes(&mut self, value: &[u8]) {
+        if value.is_empty() {
+            return self.empty();
+        }
         let at = self.keep(value.to_vec());
         self.framed(at, value.len(), value.len());
     }
@@ -101,10 +105,30 @@ impl Message {
         self.address(at, length, Some(parent));
     }
 
+    /// A run of bytes with nothing in it: a frame pointing at nothing, and
+    /// then the address of nothing that follows every frame.
+    pub fn empty(&mut self) {
+        let at = self.keep(vec![0; FRAME_BYTES]);
+        self.address(at, FRAME_BYTES, None);
+        self.nothing();
+    }
+    /// An address that points at nothing, which a call writes where a run of
+    /// bytes would be if it had any. The driver registers nothing for it, so
+    /// it leaves no trace in the list of what points where.
+    fn nothing(&mut self) {
+        self.data.extend_from_slice(&ADDRESS.to_le_bytes());
+        self.data.extend_from_slice(&[0; ADDRESS_BYTES - 4]);
+    }
     /// Write an address among the values and say where it sits, which is
     /// how the driver finds it. The answer is which address this is, for
     /// the one pointing inside it to name.
     fn address(&mut self, at: u64, length: usize, inside: Option<usize>) -> usize {
+        self.address_inside(at, length, inside, 0)
+    }
+
+    /// An address whose bytes sit inside another one at `offset`, which is
+    /// where the other one keeps the pointer to them.
+    fn address_inside(&mut self, at: u64, length: usize, inside: Option<usize>, offset: u64) -> usize {
         let which = self.addresses.len();
         self.addresses.push(self.data.len() as u64);
         self.data.extend_from_slice(&ADDRESS.to_le_bytes());
@@ -112,10 +136,89 @@ impl Message {
         self.data.extend_from_slice(&at.to_le_bytes());
         self.data.extend_from_slice(&(length as u64).to_le_bytes());
         self.data.extend_from_slice(&(inside.unwrap_or(0) as u64).to_le_bytes());
-        // The address inside the frame is the frame's first field.
-        self.data.extend_from_slice(&0u64.to_le_bytes());
+        // Where in what it sits inside the pointer to it is kept.
+        self.data.extend_from_slice(&offset.to_le_bytes());
         self.pointed += (length as u64).next_multiple_of(WORD);
         which
+    }
+
+    /// Hold on to bytes the driver will read and say where they lie, for a
+    /// call that has to name them before it writes what carries them.
+    pub fn hold(&mut self, bytes: Vec<u8>) -> u64 {
+        self.keep(bytes)
+    }
+
+    /// A run of structures, as this generation of hardware service takes
+    /// one: a frame of sixteen bytes saying where the run is and how many
+    /// structures it holds, then the run itself, then, for each run of
+    /// bytes a structure points at, a buffer of its own that names the run
+    /// it sits in and where in it its pointer lies.
+    ///
+    /// The run is written here, and each pointer inside it is filled in
+    /// once the bytes it points at have a place of their own. Each entry of
+    /// `inside` is where in the run a pointer lies and the bytes it points
+    /// at, empty or not: a structure always has the field, so a call always
+    /// carries the place for it, even where it points at nothing.
+    pub fn run(&mut self, count: u32, mut body: Vec<u8>, inside: &[(usize, Vec<u8>)]) {
+        if body.is_empty() {
+            return self.empty();
+        }
+        let mut pointed = Vec::new();
+        for (offset, bytes) in inside {
+            if bytes.is_empty() {
+                pointed.push(None);
+                continue;
+            }
+            let at = self.keep(bytes.clone());
+            body[*offset..*offset + 8].copy_from_slice(&at.to_le_bytes());
+            body[*offset + 8..*offset + 12].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+            pointed.push(Some((at, bytes.len(), *offset)));
+        }
+        let length = body.len();
+        let run = self.keep(body);
+        let mut frame = Vec::with_capacity(FRAME_BYTES);
+        frame.extend_from_slice(&run.to_le_bytes());
+        frame.extend_from_slice(&count.to_le_bytes());
+        frame.extend_from_slice(&[0; 4]);
+        let frame_at = self.keep(frame);
+        let which = self.address(frame_at, FRAME_BYTES, None);
+        let inside_the_run = self.address(run, length, Some(which));
+        for each in pointed {
+            match each {
+                Some((at, len, offset)) => {
+                    self.address_inside(at, len, Some(inside_the_run), offset as u64);
+                }
+                None => self.nothing(),
+            }
+        }
+    }
+
+    /// A structure that points at runs of its own, such as a key service's
+    /// note of an unlocked screen: the structure itself, then each run of
+    /// bytes inside it, named by where in the structure its pointer lies.
+    pub fn structure(&mut self, mut body: Vec<u8>, inside: &[(usize, Vec<u8>)]) {
+        let mut pointed = Vec::new();
+        for (offset, bytes) in inside {
+            if bytes.is_empty() {
+                pointed.push(None);
+                continue;
+            }
+            let at = self.keep(bytes.clone());
+            body[*offset..*offset + 8].copy_from_slice(&at.to_le_bytes());
+            body[*offset + 8..*offset + 12].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+            pointed.push(Some((at, bytes.len(), *offset)));
+        }
+        let length = body.len();
+        let at = self.keep(body);
+        let which = self.address(at, length, None);
+        for each in pointed {
+            match each {
+                Some((at, len, offset)) => {
+                    self.address_inside(at, len, Some(which), offset as u64);
+                }
+                None => self.nothing(),
+            }
+        }
     }
 }
 
@@ -160,16 +263,23 @@ impl<'a> Answer<'a> {
     pub fn i32(&mut self) -> Result<i32> {
         Ok(i32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
     }
+    pub fn u32(&mut self) -> Result<u32> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
+    }
+    pub fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
+    }
 
     /// A truth value: a byte, padded to four as everything is.
     pub fn bool(&mut self) -> Result<bool> {
         Ok(self.take(4)?[0] != 0)
     }
 
-    /// The bytes an address in the reply points at. The driver has already
-    /// moved them into this program's own room and rewritten the address,
-    /// so they are read where they lie.
-    pub fn pointed(&mut self) -> Result<&'a [u8]> {
+    /// Where an address in the reply points and how many bytes lie there.
+    /// The driver has already moved what it points at into this program's
+    /// own room and rewritten the address, so zero means the far side sent
+    /// nothing for it.
+    fn buffer(&mut self) -> Result<(u64, u64)> {
         let raw = self.take(ADDRESS_BYTES)?;
         let kind = u32::from_le_bytes(raw[0..4].try_into().expect("four bytes"));
         if kind != ADDRESS {
@@ -177,12 +287,47 @@ impl<'a> Answer<'a> {
         }
         let at = u64::from_le_bytes(raw[8..16].try_into().expect("eight bytes"));
         let length = u64::from_le_bytes(raw[16..24].try_into().expect("eight bytes"));
+        Ok((at, length))
+    }
+    /// The bytes an address in the reply points at, which must be there.
+    pub fn pointed(&mut self) -> Result<&'a [u8]> {
+        let (at, length) = self.buffer()?;
         if at == 0 {
             bail!("the service left out something the call asked for");
         }
         Ok(unsafe { std::slice::from_raw_parts(at as *const u8, length as usize) })
     }
-
+    /// A run of bytes as this generation of service hands one back: a frame
+    /// of sixteen bytes saying where the bytes are and how many there are,
+    /// then the bytes themselves in a buffer of their own. A run with
+    /// nothing in it arrives as an address pointing at nothing.
+    pub fn pair(&mut self) -> Result<&'a [u8]> {
+        let (count, said) = self.pair_count()?;
+        let _ = count;
+        Ok(said)
+    }
+    /// The same, with how many of them the frame says there are, for a run
+    /// of structures where the count is not simply the length.
+    pub fn pair_count(&mut self) -> Result<(usize, &'a [u8])> {
+        let (at, length) = self.buffer()?;
+        if at == 0 {
+            return Ok((0, &[]));
+        }
+        if length == FRAME_BYTES as u64 {
+            let frame = unsafe { std::slice::from_raw_parts(at as *const u8, FRAME_BYTES) };
+            let count = u32::from_le_bytes(frame[8..12].try_into().expect("four bytes")) as usize;
+            return Ok((count, self.pointed()?));
+        }
+        Ok((length as usize, unsafe { std::slice::from_raw_parts(at as *const u8, length as usize) }))
+    }
+    /// Text a service hands back, which is a run of bytes with a terminator
+    /// the count leaves out.
+    pub fn said(&mut self) -> Result<String> {
+        let (count, raw) = self.pair_count()?;
+        let worth = count.min(raw.len());
+        let text = String::from_utf8_lossy(&raw[..worth]).into_owned();
+        Ok(text.trim_end_matches('\0').to_string())
+    }
     /// Text the far side wrote as its own value rather than as a frame.
     fn text(&mut self) -> Result<String> {
         let units = self.i32()?;
