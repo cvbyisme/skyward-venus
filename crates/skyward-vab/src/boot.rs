@@ -130,7 +130,8 @@ impl<'a> BootControl<'a> {
                 // whose program is not: one that says what it serves is
                 // taken, and one that cannot is left for the version after
                 // it.
-                if hidl::describes(&control).is_ok_and(|name| name.contains("IBootControl")) {
+                let serves = hidl::describes(&control).is_ok_and(|name| name.contains("IBootControl"));
+                if serves && older(&control, MERGE, ACTIVE, |_| {}, |r| r.i32()).is_ok() {
                     found = Some((control, version));
                     break;
                 }
@@ -144,7 +145,12 @@ impl<'a> BootControl<'a> {
     pub fn active(&self) -> Result<Slot> {
         let number = match self {
             BootControl::Newer(c) => newer(c, GET_ACTIVE, |_| {}, |r| r.i32()),
-            BootControl::Older(c, v) => older(c, v, ACTIVE, |_| {}, |r| r.i32()),
+            // The name a call is made by is the version that brought its
+            // method: a service of the older kind checks it, and one built
+            // for 1.1 takes 1.1's names for the three methods 1.1 added and
+            // 1.0's for the five it inherited. Asking a 1.1 service for
+            // which slot comes next under any other name is refused.
+            BootControl::Older(c, _) => older(c, MERGE, ACTIVE, |_| {}, |r| r.i32()),
         }
         .context("ask which slot starts next")?;
         match number {
@@ -168,14 +174,14 @@ impl<'a> BootControl<'a> {
     fn bootable(&self, slot: Slot) -> Result<bool> {
         match self {
             BootControl::Newer(c) => newer(c, IS_BOOTABLE, |p| p.i32(slot.number() as i32), |r| r.bool()),
-            BootControl::Older(c, v) => older(c, v, BOOTABLE, |m| m.u32(slot.number()), answered),
+            BootControl::Older(c, _) => older(c, FIRST, BOOTABLE, |m| m.u32(slot.number()), answered),
         }
     }
 
     fn successful(&self, slot: Slot) -> Result<bool> {
         match self {
             BootControl::Newer(c) => newer(c, IS_SUCCESSFUL, |p| p.i32(slot.number() as i32), |r| r.bool()),
-            BootControl::Older(c, v) => older(c, v, SUCCESSFUL, |m| m.u32(slot.number()), answered),
+            BootControl::Older(c, _) => older(c, FIRST, SUCCESSFUL, |m| m.u32(slot.number()), answered),
         }
     }
 
@@ -185,7 +191,7 @@ impl<'a> BootControl<'a> {
             BootControl::Newer(c) => newer(c, GET_MERGE_STATUS, |_| {}, |r| r.i32()),
             BootControl::Older(c, v) => {
                 ensures_merge(v)?;
-                older(c, v, MERGE_STATUS, |_| {}, |r| r.i32())
+                older(c, MERGE, MERGE_STATUS, |_| {}, |r| r.i32())
             }
         }
         .context("ask where an update stands")?;
@@ -206,7 +212,7 @@ impl<'a> BootControl<'a> {
             BootControl::Newer(c) => newer(c, SET_SNAPSHOT_MERGE_STATUS, |p| p.i32(status as i32), |_| Ok(true)),
             BootControl::Older(c, v) => {
                 ensures_merge(v)?;
-                older(c, v, SET_MERGE_STATUS, |m| m.u32(status as u32), |r| r.bool())
+                older(c, MERGE, SET_MERGE_STATUS, |m| m.u32(status as u32), |r| r.bool())
             }
         }
         .with_context(what)?;
@@ -225,7 +231,7 @@ impl<'a> BootControl<'a> {
             BootControl::Older(c, v) => {
                 // The answer is whether it worked, and why not in text it
                 // points at.
-                let why = older(c, v, SET_ACTIVE, |m| m.u32(slot.number()), |r| {
+                let why = older(c, FIRST, SET_ACTIVE, |m| m.u32(slot.number()), |r| {
                     let done = r.pointed()?;
                     if done.first().is_some_and(|&b| b != 0) {
                         return Ok(None);
