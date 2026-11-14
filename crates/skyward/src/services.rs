@@ -42,7 +42,11 @@ pub fn start(services: &[Service], libraries: Option<&Path>) -> Result<()> {
     let known = ueventd::accounts(&ueventd::PASSWD_FILES.iter().chain(&ueventd::GROUP_FILES).copied().collect::<Vec<_>>());
     for s in services {
         if !Path::new(&s.path).is_file() {
-            bail!("{} is missing; is its partition mounted?", s.path);
+            // One build of the phone has programs another has not: the ones
+            // that are here are the ones that matter, so say which is gone
+            // and go on rather than hold back every program after it.
+            let _ = skyward_sys::kmsg(&format!("{} is missing; skipped", s.path));
+            continue;
         }
         let mut s = s.clone();
         if let Some(dir) = libraries {
@@ -57,8 +61,16 @@ pub fn start(services: &[Service], libraries: Option<&Path>) -> Result<()> {
         }
         let waiting = s.clone();
         let name = Path::new(&s.path).file_name().map_or_else(|| s.path.clone(), |n| n.to_string_lossy().into_owned());
-        thread::Builder::new().name(name).spawn(move || supervise(&s, &who)).context("start a supervising thread")?;
-        ready(&waiting)?;
+        thread::Builder::new()
+            .name(name)
+            .spawn(move || supervise(&s, &who))
+            .context("start a supervising thread")?;
+        // A program that never says it is ready would hold up every one
+        // after it, and the key service that opens the data partition is
+        // among those. Say so, and let the rest start.
+        if let Err(e) = ready(&waiting) {
+            let _ = skyward_sys::kmsg(&format!("{e:#}"));
+        }
     }
     Ok(())
 }
