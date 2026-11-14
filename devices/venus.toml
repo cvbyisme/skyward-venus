@@ -7,10 +7,13 @@ soc = { hans = "骁龙 888 移动平台", hant = "Snapdragon® 888 行動平台"
 os_version_prop = "ro.mi.os.version.incremental"
 
 [display]
-# The system starts in the lower mode of the panel: 1080 by 2400 at 420.
-width = 1080
-height = 2400
-density = 420
+# The panel's own mode in the device tree, which is the mode the driver
+# boots with: the k2 panel is 1440 by 3200, and the pages are laid out on
+# it at the density of the system's own scaled-up mode, 560, which comes to
+# the 1080 by 2400 at 420 mode the system starts in.
+width = 1440
+height = 3200
+density = 560
 diagonal = 6.81
 
 [modules]
@@ -33,6 +36,41 @@ third_party = true
 # The AVB footer names the partition the image fills, which is boot here.
 partition = "boot"
 
+# The secure world reaches back into Android through the listeners this
+# daemon registers; without them no key can be used.
+[[service]]
+path = "/vendor/bin/qseecomd"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_property = "vendor.sys.listeners.registered"
+user = "root"
+groups = ["root", "drmrpc"]
+# The credential service: the secure world has it check a screen lock, and
+# it is the only thing that hands out the note the key service wants before
+# it uses a key a screen lock guards.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper@1.0-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_hardware_service = "android.hardware.gatekeeper@1.0::IGatekeeper/default"
+user = "system"
+groups = ["system"]
+# The directory the phone's hardware services of the older kind register
+# with, which a recovery does not carry: this is the installed system's own
+# program, against the installed system's own libraries.
+[[service]]
+path = "/mnt/system_ext/bin/hwservicemanager"
+libraries = ["/mnt/system/lib64", "/mnt/system_ext/lib64"]
+ready_property = "hwservicemanager.ready"
+user = "system"
+groups = ["system", "readproc"]
+# The boot control, which says which slot the bootloader starts next and
+# switches it, writing where the bootloader reads it. This phone's own
+# service is version 1.1 of the older kind.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.boot@1.1-service"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_hardware_service = "android.hardware.boot@1.1::IBootControl/default"
+user = "root"
+groups = ["root"]
 [wlan]
 modules = ["qca_cld3_qca6390"]
 writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
