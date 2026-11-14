@@ -162,7 +162,7 @@ pub fn unmap() -> Result<()> {
 }
 
 /// Show the owner's shared storage at /sdcard; shown already, it stays.
-fn show_owner_storage() -> Result<()> {
+pub fn show_owner_storage() -> Result<()> {
     let at = Path::new(SDCARD);
     if mount::is_mount_point(at)? {
         return Ok(());
@@ -219,6 +219,9 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
     // each file and holds none: nothing is let in, and what the partition
     // holds reads as it is.
     if !Path::new(FILE_MODE).exists() {
+        // Nothing is closed, and what /sdcard shows belongs to no user's own
+        // files, so it is shown all the same.
+        let _ = show_owner_storage();
         return Ok(Opening { mounted, closed: Vec::new() });
     }
     open_shared(service)?;
@@ -236,7 +239,9 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
             Some(lock) => closed.push(Closed { user, lock: lock.kind, made_up: made_up(user, &protector.id), why: None }),
         }
     }
-    Ok(Opening { mounted, closed: open_made_up(service, closed, &owner) })
+    let closed = open_made_up(service, closed, &owner);
+    let _ = show_owner_storage();
+    Ok(Opening { mounted, closed })
 }
 
 /// Open the own files of `user` with what they typed at their screen lock

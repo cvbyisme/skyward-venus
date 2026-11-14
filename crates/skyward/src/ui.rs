@@ -844,6 +844,11 @@ fn log_mounted(mounted: &Opened) -> Result<()> {
 fn show_closed(app: &mut App, closed: &[Closed]) -> Result<()> {
     use skyward_crypto::user::Lock;
     skyward_sys::kmsg(&format!("the users whose own files are still closed: {:?}", closed.iter().map(|c| c.user).collect::<Vec<_>>()))?;
+    // What /sdcard shows is the owner's shared storage, which is not part of
+    // any user's own files; where it is not shown, only the recovery's own
+    // empty /sdcard is left, which looks like a partition with nothing in it.
+    let shown = skyward_block::mount::is_mount_point(std::path::Path::new("/sdcard")).unwrap_or(false);
+    skyward_sys::kmsg(&format!("the owner's shared storage is shown at /sdcard: {shown}"))?;
     for c in closed {
         if let Some(why) = &c.why {
             skyward_sys::kmsg(&format!("the files of user {} stay closed: {why}", c.user))?;
