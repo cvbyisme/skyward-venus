@@ -1352,7 +1352,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
     let wlan = match &cfg.wlan {
         Some(w) => {
             app.state.wlan = Some(Wlan::default());
-            let modules = cfg.modules.sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
+            // The wireless driver belongs to the installed vendor image, so
+            // the vendor partitions are read before the recovery's own
+            // ramdisk: a ramdisk built for another phone carries a driver for
+            // another chip, which probes the hardware, finds a device its
+            // platform does not know, and fails to load -- which is what the
+            // wireless interface then reports as a driver that will not come
+            // up.
+            let mut sources = cfg.modules.sources.clone();
+            sources.sort_by_key(|s| !matches!(s.as_str(), "vendor" | "vendor_dlkm"));
+            let modules = sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
             let libraries = secure::libraries().unwrap_or_else(|e| {
                 let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
                 None
