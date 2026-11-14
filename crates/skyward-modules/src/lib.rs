@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,33 +20,36 @@ pub fn source_dir(source: &str) -> Result<PathBuf> {
 }
 
 /// Load `names` (module names without `.ko`) with their dependencies. Each
-/// comes from the first of `dirs` that holds it, and its dependencies from the
-/// tables of all of `dirs`, read as Android's modprobe reads them when it is
-/// told one folder after another; a module the kernel already has counts as
+/// comes from the first of `dirs` that holds it, and its dependencies from
+/// that directory's modules.dep; a module the kernel already has counts as
 /// loaded. Returns the files loaded, dependencies first.
-///
-/// The tables are read together because a phone may keep the chain a module
-/// needs in a folder of its own: venus keeps one table for the modules its
-/// recovery needs and a second under `5.4-gki` for the rest, and its own init
-/// runs modprobe over both, so the whole of the wireless driver's chain is
-/// written down only in the second.
 pub fn load(dirs: &[PathBuf], names: &[String]) -> Result<Vec<PathBuf>> {
-    let graph = merge_dep(dirs)?;
     let mut loaded = Vec::new();
+    let mut why = Vec::new();
     for name in names {
         let file = format!("{name}.ko");
-        if !dirs.iter().any(|d| d.join(&file).is_file()) {
-            bail!("{file} is in none of {dirs:?}");
-        }
+        let Some(dir) = dirs.iter().find(|d| d.join(&file).is_file()) else {
+            why.push(format!("{file} is in none of {dirs:?}"));
+            continue;
+        };
+        // One module that will not load leaves the others to be tried: a
+        // phone whose WLAN driver is unusable still has the rest.
+        let graph = parse_dep(dir)?;
         for m in graph.load_order(std::slice::from_ref(&file)) {
-            let path = graph
-                .resolve_path(&m)
-                .ok_or_else(|| anyhow!("{m} is in none of {dirs:?}"))?;
-            insmod(&path, "")?;
-            loaded.push(path);
+            let Some(path) = graph.resolve_path(&m) else {
+                why.push(format!("{m} is listed in {}/modules.dep but missing", dir.display()));
+                continue;
+            };
+            match insmod(&path, "") {
+                Ok(()) => loaded.push(path),
+                Err(e) => why.push(format!("{e:#}")),
+            }
         }
     }
-    Ok(loaded)
+    match (loaded.is_empty(), why.is_empty()) {
+        (true, false) => bail!("no module was loaded: {}", why.join("; ")),
+        _ => Ok(loaded),
+    }
 }
 
 /// A `modules.dep` graph: each module file mapped to the module files it
@@ -55,58 +58,16 @@ pub fn load(dirs: &[PathBuf], names: &[String]) -> Result<Vec<PathBuf>> {
 /// in several places: vendor_boot ramdisk, vendor_dlkm, vendor).
 #[derive(Debug, Default)]
 pub struct ModuleGraph {
-    /// The folders searched for a module, in the order given.
-    pub dirs: Vec<PathBuf>,
+    pub base: PathBuf,
     pub deps: BTreeMap<String, Vec<String>>,
-    /// Where each module a table names lies, as that table gave it.
-    pub files: BTreeMap<String, PathBuf>,
 }
-/// The graph of one folder's tables.
+
 pub fn parse_dep(base: impl AsRef<Path>) -> Result<ModuleGraph> {
     let base = base.as_ref().to_path_buf();
-    merge_dep(std::slice::from_ref(&base))
-}
-/// The graph of every folder's tables together: the first table that names a
-/// module is the one that says what it depends on, and a folder that keeps a
-/// table of its own beside the modules, as one with two builds of them does,
-/// is read after the folder it lies in.
-pub fn merge_dep(dirs: &[PathBuf]) -> Result<ModuleGraph> {
-    let mut graph = ModuleGraph { dirs: dirs.to_vec(), ..ModuleGraph::default() };
-    let mut found = false;
-    for dir in dirs {
-        for root in table_roots(dir) {
-            found |= read_table(&mut graph, &root)?;
-        }
-    }
-    if !found {
-        bail!("no modules.dep in any of {dirs:?}");
-    }
-    Ok(graph)
-}
-/// The folders whose table is read for `dir`: the folder itself, then the
-/// folders inside it that keep a table of their own.
-fn table_roots(dir: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![dir.to_path_buf()];
-    if let Ok(entries) = fs::read_dir(dir) {
-        let mut inner: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir() && p.join("modules.dep").is_file())
-            .collect();
-        inner.sort();
-        roots.extend(inner);
-    }
-    roots
-}
-/// Read one folder's table into the graph, leaving alone what a table read
-/// before it already named. Whether the folder had a table at all.
-fn read_table(graph: &mut ModuleGraph, root: &Path) -> Result<bool> {
-    let dep_path = root.join("modules.dep");
-    let text = match fs::read_to_string(&dep_path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e).with_context(|| format!("read {}", dep_path.display())),
-    };
+    let dep_path = base.join("modules.dep");
+    let text = fs::read_to_string(&dep_path)
+        .with_context(|| format!("read {}", dep_path.display()))?;
+    let mut deps = BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -115,20 +76,11 @@ fn read_table(graph: &mut ModuleGraph, root: &Path) -> Result<bool> {
         let Some((lhs, rhs)) = line.split_once(':') else {
             continue;
         };
-        let lhs = lhs.trim();
-        let name = basename(lhs);
-        if graph.deps.contains_key(&name) {
-            continue;
-        }
+        let name = basename(lhs.trim());
         let ds = rhs.split_whitespace().map(basename).collect();
-        let mut file = root.join(lhs);
-        if !file.is_file() {
-            file = find_file(root, &name).unwrap_or(file);
-        }
-        graph.deps.insert(name.clone(), ds);
-        graph.files.insert(name, file);
+        deps.insert(name, ds);
     }
-    Ok(true)
+    Ok(ModuleGraph { base, deps })
 }
 
 fn basename(p: &str) -> String {
@@ -169,21 +121,11 @@ impl ModuleGraph {
     }
 
     pub fn resolve_path(&self, module: &str) -> Option<PathBuf> {
-        if let Some(file) = self.files.get(module) {
-            if file.is_file() {
-                return Some(file.clone());
-            }
+        let direct = self.base.join(module);
+        if direct.exists() {
+            return Some(direct);
         }
-        for dir in &self.dirs {
-            let direct = dir.join(module);
-            if direct.exists() {
-                return Some(direct);
-            }
-            if let Some(found) = find_file(dir, module) {
-                return Some(found);
-            }
-        }
-        None
+        find_file(&self.base, module)
     }
 }
 
@@ -240,28 +182,11 @@ mod tests {
         deps.insert("a.ko".to_string(), vec!["b.ko".to_string()]);
         deps.insert("b.ko".to_string(), vec!["c.ko".to_string()]);
         deps.insert("c.ko".to_string(), vec![]);
-        let g = ModuleGraph { deps, ..ModuleGraph::default() };
+        let g = ModuleGraph { base: PathBuf::new(), deps };
         let order = g.load_order(&["a.ko".to_string()]);
         assert_eq!(order, vec!["c.ko", "b.ko", "a.ko"]);
     }
 
-    #[test]
-    fn a_module_takes_the_table_that_names_it_and_not_one_that_does_not() {
-        let root = std::env::temp_dir().join(format!("skyward-dep-{}", std::process::id()));
-        let (first, second) = (root.join("plain"), root.join("plain/5.4-gki"));
-        fs::create_dir_all(&second).expect("make the folders");
-        fs::write(first.join("modules.dep"), "/vendor/lib/modules/a.ko: /vendor/lib/modules/b.ko\n").expect("write the first table");
-        fs::write(second.join("modules.dep"), "/vendor/lib/modules/a.ko: /vendor/lib/modules/c.ko\n/vendor/lib/modules/z.ko: /vendor/lib/modules/c.ko\n").expect("write the second table");
-        for name in ["a.ko", "b.ko", "c.ko", "z.ko"] {
-            fs::write(first.join(name), b"").expect("write a module");
-        }
-        let dirs = vec![first.clone()];
-        let g = merge_dep(&dirs).expect("read the tables");
-        assert_eq!(g.deps.get("a.ko"), Some(&vec!["b.ko".to_string()]), "the folder's own table comes first");
-        assert_eq!(g.deps.get("z.ko"), Some(&vec!["c.ko".to_string()]), "a chain only the inner table writes down is still found");
-        assert_eq!(g.load_order(&["z.ko".to_string()]), vec!["c.ko".to_string(), "z.ko".to_string()]);
-        fs::remove_dir_all(&root).ok();
-    }
     #[test]
     fn strips_paths_to_basenames() {
         assert_eq!(basename("kernel/drivers/foo/bar.ko"), "bar.ko");
