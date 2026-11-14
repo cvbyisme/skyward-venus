@@ -52,14 +52,17 @@ pub struct Encryption {
 
 impl Encryption {
     /// Read what an entry of the phone's own table says.
-    pub fn of(entry: &Entry) -> Result<Encryption> {
-        let said = entry.extra("metadata_encryption").context("the phone says its data partition is not encrypted whole")?;
+    pub fn of(entry: &Entry) -> Result<Option<Encryption>> {
+        // Only a phone that encrypts the partition whole says it here; one
+        // whose files are each encrypted on their own, as Android's own vold
+        // does it, says nothing, and the partition is read as it is.
+        let Some(said) = entry.extra("metadata_encryption") else { return Ok(None) };
         let (name, rest) = said.split_once(':').unwrap_or((said, ""));
         let cipher = CIPHERS
             .iter()
             .find_map(|(theirs, kernels)| (*theirs == name).then_some(*kernels))
             .with_context(|| format!("no cipher here is the {name} the phone names"))?;
-        Ok(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" })
+        Ok(Some(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" }))
     }
 }
 
@@ -134,8 +137,11 @@ fn open(service: &Service<'_>) -> Result<Opened> {
 fn map(service: &Service<'_>) -> Result<(Vec<Entry>, PathBuf)> {
     let entries = skyward_block::fstab::read(MOUNT)?;
     let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
-    let encryption = Encryption::of(entry)?;
     let device = skyward_block::fstab::device(entry)?;
+    // A phone that does not encrypt the partition whole hands out the
+    // partition itself: what each user's own files hold is opened by the
+    // phone's own vold once it runs, and nothing here opens it sooner.
+    let Some(encryption) = Encryption::of(entry)? else { return Ok((entries, PathBuf::from(device))) };
     let key = storage_key(service, entry, &encryption)?;
     let sectors = skyward_block::size_bytes(&device)? / 512;
     let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
@@ -593,14 +599,20 @@ mod tests {
     #[test]
     fn the_phones_own_words_for_the_cipher_become_the_kernels() {
         let e = entry("metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/vold/metadata_encryption");
-        assert_eq!(Encryption::of(&e).unwrap(), Encryption { cipher: "aes-xts-plain64".into(), wrapped: true });
+        assert_eq!(Encryption::of(&e).unwrap(), Some(Encryption { cipher: "aes-xts-plain64".into(), wrapped: true }));
         let plain = entry("metadata_encryption=adiantum");
-        assert_eq!(Encryption::of(&plain).unwrap(), Encryption { cipher: "xchacha12,aes-adiantum-plain64".into(), wrapped: false });
+        assert_eq!(Encryption::of(&plain).unwrap(), Some(Encryption { cipher: "xchacha12,aes-adiantum-plain64".into(), wrapped: false }));
     }
 
     #[test]
+    fn a_phone_that_does_not_encrypt_the_partition_whole_names_no_cipher() {
+        // Every file encrypted on its own, as the 11 does it: the table names
+        // the directory the key sits in and no cipher at all.
+        let e = entry("latemount,wait,check,formattable,keydirectory=/metadata/vold/metadata_encryption,quota");
+        assert_eq!(Encryption::of(&e).unwrap(), None);
+    }
+    #[test]
     fn a_cipher_or_a_key_the_phone_does_not_name_is_an_error() {
-        assert!(Encryption::of(&entry("quota")).is_err());
         assert!(Encryption::of(&entry("metadata_encryption=rot13")).is_err());
         assert!(key_dir(&entry("quota")).is_err());
     }
