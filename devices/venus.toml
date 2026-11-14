@@ -66,6 +66,26 @@ ready_property = "vendor.sys.listeners.registered"
 user = "root"
 groups = ["root", "drmrpc"]
 
+# The key service of the newer kind: the builds of this phone whose system is
+# Android 13 keep their keys through this one instead, and it speaks over the
+# ordinary binder rather than the hardware one. Its own program registers it,
+# so it needs nothing else to be up first.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.security.keymint-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
+user = "system"
+groups = ["system", "drmrpc"]
+
+# The credential service of the same newer kind, which those builds keep
+# beside it: it is what the secure world has check a screen lock.
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper-rust-service-qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.gatekeeper.IGatekeeper/default"
+user = "system"
+groups = ["system"]
+
 # The directory the phone's hardware services of the older kind register
 # with. A recovery carries none of it, so it is the installed system's own,
 # which reads the descriptions in /vendor/etc/vintf.
