@@ -42,6 +42,20 @@ fn methods_of(sdk: u32) -> Methods {
 /// The recovery's own version, which its property files give.
 const SDK: &str = "ro.build.version.sdk";
 
+/// Both numberings, the one this build of the recovery numbers its methods
+/// by first. The directory is the phone's own program, started from the
+/// system the phone runs, so the version that decides its numbering is that
+/// system's and not this build's. Where the two disagree the call comes back
+/// refused, which is why both are tried.
+fn numberings() -> Result<[Methods; 2]> {
+    let own = methods()?;
+    let other = match own.check_service {
+        3 => methods_of(34),
+        _ => methods_of(36),
+    };
+    Ok([own, other])
+}
+
 fn methods() -> Result<Methods> {
     let sdk = skyward_sys::prop(SDK).with_context(|| format!("the recovery says no {SDK}"))?;
     Ok(methods_of(sdk.parse().with_context(|| format!("{SDK} is {sdk:?}"))?))
@@ -81,15 +95,27 @@ pub fn version(service: &crate::driver::Handle, interface: &str) -> Result<i32> 
 #[cfg(target_os = "android")]
 pub fn find<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<crate::driver::Handle<'a>>> {
     let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.string(name);
-    let reply = directory.transact(methods()?.check_service, &call).with_context(|| format!("look up {name}"))?;
-    let mut read = reply.read();
-    status::ok(&mut read).with_context(|| format!("look up {name}"))?;
-    match read.object().with_context(|| format!("read what the directory answered for {name}"))? {
-        Some(handle) => Ok(Some(crate::driver::Handle::hold(binder, handle)?)),
-        None => Ok(None),
+    let mut turned_away = None;
+    for m in numberings()? {
+        let mut call = Parcel::call(DIRECTORY);
+        call.string(name);
+        let reply = match directory.transact(m.check_service, &call) {
+            Ok(reply) => reply,
+            // The directory does not number a lookup there: try the other
+            // numbering before calling the service absent.
+            Err(e) => {
+                turned_away = Some(e.context(format!("look up {name}")));
+                continue;
+            }
+        };
+        let mut read = reply.read();
+        status::ok(&mut read).with_context(|| format!("look up {name}"))?;
+        return match read.object().with_context(|| format!("read what the directory answered for {name}"))? {
+            Some(handle) => Ok(Some(crate::driver::Handle::hold(binder, handle)?)),
+            None => Ok(None),
+        };
     }
+    Err(turned_away.expect("a numbering was tried"))
 }
 
 /// Every name registered with the directory, the directory's own among
@@ -97,14 +123,24 @@ pub fn find<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<
 #[cfg(target_os = "android")]
 pub fn names(binder: &crate::driver::Binder) -> Result<Vec<String>> {
     let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.i32(DUMP_PRIORITY_ALL);
-    let reply = directory.transact(methods()?.list_services, &call).context("list what has registered")?;
-    let mut read = reply.read();
-    status::ok(&mut read).context("list what has registered")?;
-    let count = read.i32().context("read how many have registered")?;
-    anyhow::ensure!(count >= 0, "the directory says {count} have registered");
-    (0..count).map(|_| read.string().context("read a registered name")).collect()
+    let mut turned_away = None;
+    for m in numberings()? {
+        let mut call = Parcel::call(DIRECTORY);
+        call.i32(DUMP_PRIORITY_ALL);
+        let reply = match directory.transact(m.list_services, &call) {
+            Ok(reply) => reply,
+            Err(e) => {
+                turned_away = Some(e.context("list what has registered"));
+                continue;
+            }
+        };
+        let mut read = reply.read();
+        status::ok(&mut read).context("list what has registered")?;
+        let count = read.i32().context("read how many have registered")?;
+        anyhow::ensure!(count >= 0, "the directory says {count} have registered");
+        return (0..count).map(|_| read.string().context("read a registered name")).collect();
+    }
+    Err(turned_away.expect("a numbering was tried"))
 }
 
 /// The process that serves an object.
@@ -129,20 +165,23 @@ pub fn interface(service: &crate::driver::Handle) -> Result<String> {
 #[cfg(target_os = "android")]
 pub fn declared(binder: &crate::driver::Binder, name: &str) -> Result<bool> {
     let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.string(name);
-    let reply = match directory.transact(methods()?.is_declared, &call) {
-        Ok(reply) => reply,
-        // A directory built before the method numbering this program reads
-        // answers the question with nothing the driver can carry, rather
-        // than with a no: a recovery started over an older vendor partition
-        // has one. That is taken as no description, so that a hardware
-        // service of the older kind is looked for instead.
-        Err(_) => return Ok(false),
-    };
-    let mut read = reply.read();
-    status::ok(&mut read).with_context(|| format!("ask whether {name} is described"))?;
-    read.bool().with_context(|| format!("read whether {name} is described"))
+    for m in numberings()? {
+        let mut call = Parcel::call(DIRECTORY);
+        call.string(name);
+        let reply = match directory.transact(m.is_declared, &call) {
+            Ok(reply) => reply,
+            // A directory built before the method numbering this program
+            // reads answers the question with nothing the driver can carry,
+            // rather than with a no: try the other numbering, and take one
+            // that answers neither as describing nothing, so that a
+            // hardware service of the older kind is looked for instead.
+            Err(_) => continue,
+        };
+        let mut read = reply.read();
+        status::ok(&mut read).with_context(|| format!("ask whether {name} is described"))?;
+        return read.bool().with_context(|| format!("read whether {name} is described"));
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
