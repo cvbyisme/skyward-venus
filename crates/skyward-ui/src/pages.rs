@@ -2215,8 +2215,8 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
         Action::Open(Screen::Relabel),
-        Action::Open(Screen::Embed),
         Action::Open(Screen::Filesystems),
+        Action::Open(Screen::Embed),
         Action::Open(Screen::Logs),
         Action::Open(Screen::Update),
     ]);

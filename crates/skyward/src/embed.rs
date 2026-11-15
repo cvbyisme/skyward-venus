@@ -10,10 +10,10 @@
 //! from, and what makes a recovery started with `fastboot boot` stay.
 
 use anyhow::{bail, Context, Result};
-use skyward_bootimg::{BootImage, Ramdisk};
+use skyward_bootimg::BootImage;
 use skyward_block::BY_NAME;
 use std::fs;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// What one embed left, for the caller to tell the screen.
@@ -35,8 +35,10 @@ pub struct Embedded {
 /// ones this phone already runs.
 pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -> Result<Embedded> {
     let partition = Path::new(BY_NAME).join(format!("boot{}", slot.suffix()));
+    log(&format!("keeping {} in {}", image.display(), partition.display()));
     let was = fs::read(&partition).with_context(|| format!("read {}", partition.display()))?;
     let size = was.len();
+    log(&format!("{} holds {size} bytes", partition.display()));
     let mut mine = BootImage::read(image)?;
     if mine.ramdisk.is_empty() {
         bail!("{} holds no ramdisk", image.display());
@@ -45,6 +47,7 @@ pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -
     boot.ramdisk = unpinned(image, std::mem::take(&mut mine.ramdisk))?;
     let ramdisk = boot.ramdisk.len();
     let bytes = boot.to_bytes().context("build the image")?;
+    log(&format!("the image comes to {} bytes with {} of ramdisk", bytes.len(), ramdisk));
     if bytes.len() > size {
         bail!("the image comes to {} bytes, more than the {size} the partition holds", bytes.len());
     }
@@ -57,35 +60,58 @@ pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -
             Some(path)
         }
     };
+    log(&format!(
+        "kept the recovery in {}: {} bytes of ramdisk on the kernel it holds, {size} bytes of partition",
+        partition.display(),
+        ramdisk
+    ));
     write(&partition, &bytes, size)?;
     Ok(Embedded { partition, backup, ramdisk })
 }
 
 /// The ramdisk `image` holds, with the one property that pins every start of
-/// the phone to the recovery taken out.
+/// the phone to the recovery commented out.
 ///
 /// An image booted once by hand has to say that it is the recovery, because
 /// the bootloader marks every image it loads by hand as a normal boot. One
 /// written into the boot partition must not: the bootloader answers whether a
 /// start is a normal one or a recovery, and a ramdisk that answers for it
 /// leaves the system unable to start at all.
+///
+/// The property is commented out where it stands, leaving the archive the
+/// same length, so the ramdisk is unpacked, one byte changed and packed
+/// again: rebuilding it entry by entry would cost the phone a minute.
 fn unpinned(image: &Path, ramdisk: Vec<u8>) -> Result<Vec<u8>> {
-    let mut rd = Ramdisk::decode(&ramdisk).with_context(|| format!("read the ramdisk of {}", image.display()))?;
-    let name = skyward_config::ramdisk::PROP_DEFAULT;
-    let Some(props) = rd.find(name) else {
-        return rd.encode().context("write the ramdisk");
-    };
-    let kept: Vec<u8> = props
-        .data
-        .split(|b| *b == b'\n')
-        .filter(|line| !line.starts_with(b"ro.boot.force_normal_boot="))
-        .flat_map(|line| line.iter().copied().chain(std::iter::once(b'\n')))
-        .collect();
-    if kept.len() == props.data.len() {
-        return rd.encode().context("write the ramdisk");
+    const SAID: &[u8] = b"ro.boot.force_normal_boot=0";
+    let mut cpio = Vec::new();
+    if ramdisk.starts_with(&[0x1f, 0x8b]) {
+        flate2::read::GzDecoder::new(ramdisk.as_slice())
+            .read_to_end(&mut cpio)
+            .with_context(|| format!("unpack the ramdisk of {}", image.display()))?;
+    } else {
+        anyhow::bail!("{} holds a ramdisk that is not gzip", image.display());
     }
-    rd.replace(name, kept).with_context(|| format!("rewrite {name}"))?;
-    rd.encode().context("write the ramdisk")
+    let at = cpio.windows(SAID.len()).position(|w| w == SAID);
+    let Some(at) = at else {
+        log(&format!("{} already leaves the bootloader to say how a start is", image.display()));
+        return Ok(ramdisk);
+    };
+    // A line that starts with `#` is one init does not read, and one byte
+    // keeps every entry in the archive where it was.
+    cpio[at] = b'#';
+    let mut out = Vec::new();
+    let mut enc = flate2::write::GzEncoder::new(&mut out, flate2::Compression::fast());
+    enc.write_all(&cpio).context("pack the ramdisk again")?;
+    enc.finish().context("finish the ramdisk")?;
+    log(&format!("{} keeps {} bytes of ramdisk, one property left out", image.display(), out.len()));
+    Ok(out)
+}
+
+/// Say what was done, for the log the phone keeps.
+fn log(line: &str) {
+    if skyward_sys::kmsg(line).is_err() {
+        eprintln!("{line}");
+    }
 }
 
 /// Put `bytes` at the start of `path` and leave nothing of what the partition
