@@ -1253,6 +1253,27 @@ pub fn footnote(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str) -> f32
     top
 }
 
+/// A card that stands at the top of a page: what the page has just done,
+/// or why it could not, set in the page's accent so it is read before
+/// anything else. `good` is false for what went wrong. Returns where it ends.
+pub fn banner(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str, good: bool) -> f32 {
+    let m = &t.m;
+    let x = m.title_x;
+    let w = m.w as f32 - x * 2.0;
+    let ink = if good { t.pal.accent } else { t.pal.danger };
+    let ground = if good { t.pal.card } else { t.pal.danger_soft };
+    let lines = wrap(c, &f.value, text, m.sub_px, w - m.dp(28.0));
+    let h = lines.len() as f32 * m.sub_pitch + m.dp(24.0);
+    let top = y + m.dp(8.0);
+    c.fill_round_rect(x, top, w, h, m.dp(14.0), ground);
+    let mut at = top + m.dp(12.0);
+    for line in &lines {
+        c.text_top(&f.value, line, x + m.dp(14.0), at, m.sub_px, ink, None);
+        at += m.sub_pitch;
+    }
+    top + h
+}
+
 /// Body text set on the page itself, as a licence or notice reads,
 /// wrapped to the content width; a blank line starts a new paragraph.
 /// Returns where the text ends.

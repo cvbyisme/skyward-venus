@@ -2322,7 +2322,16 @@ pub fn embed(cx: &Ctx) -> Frame {
         "把正在執行的復原寫入手機的 boot 分割區，保留手機原有的核心。之後開機、誤刷 boot，仍然會進入 Skyward。",
         "Writes the recovery that is running into the phone's boot partition, on the phone's own kernel. After this, booting it needs neither the computer nor the cable.",
     ]);
-    let y = widgets::paragraph(&mut c, t, f, top, what);
+    // What the last write came to reads above everything else on the page.
+    let mut y = top;
+    if let Some(end) = s.embed.as_ref().and_then(|e| e.outcome.as_ref()) {
+        let (said, good) = match end {
+            Ok(said) => (said.clone(), true),
+            Err(why) => (tr!(l, "固化失败：{why}", "固化失敗：{why}", "Couldn't keep it: {why}"), false),
+        };
+        y = widgets::banner(&mut c, t, f, y, &said, good);
+    }
+    let y = widgets::paragraph(&mut c, t, f, y, what);
     let Some(page) = &s.embed else {
         widgets::list(&mut c, t, f, y, &[Row::new(l.pick(READING_IMAGES)).trail(Trail::None)]);
         return Frame::new(t, c, out, title, top);
@@ -2352,14 +2361,7 @@ pub fn embed(cx: &Ctx) -> Frame {
     let label = l.pick(["滑动以固化", "滑動以固化", "Slide to keep"]);
     let track = widgets::confirm(&mut c, t, f, y + t.m.card_gap, label, true, s.confirm);
     out.push(Hit { rect: track, action: Action::Confirm(Confirm::Embed) });
-    let mut bottom = track.y + track.h;
-    if let Some(end) = &page.outcome {
-        let note = match end {
-            Ok(said) => said.clone(),
-            Err(why) => tr!(l, "固化失败：{why}", "固化失敗：{why}", "Couldn't keep it: {why}"),
-        };
-        bottom = widgets::footnote(&mut c, t, f, bottom, &note);
-    }
+    let bottom = track.y + track.h;
     Frame::new(t, fit(c, t, bottom), out, title, top)
 }
 

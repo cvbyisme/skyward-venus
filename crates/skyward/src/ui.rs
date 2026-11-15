@@ -330,30 +330,22 @@ fn slot_now() -> Result<skyward_vab::Slot> {
 
 /// What keeping the recovery left, for the embed page to show.
 fn say_embed(app: &mut App, done: Result<embed::Embedded>, now: u64) {
+    let l = app.state.lang;
     match done {
         Ok(embedded) => {
-            let kept = match &embedded.backup {
-                Some(b) => format!(
-                    "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk; the boot partition as it was is in {}",
-                    embedded.partition.display(),
-                    embedded.ramdisk,
-                    b.display()
-                ),
-                None => format!(
-                    "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk",
-                    embedded.partition.display(),
-                    embedded.ramdisk
-                ),
-            };
-            app.embed_ended(Ok(kept), now)
+            let backup = embedded.backup.as_ref().map(|b| b.display().to_string());
+            let said = skyward_ui::fmt::embedded(
+                l,
+                &embedded.partition.display().to_string(),
+                embedded.ramdisk,
+                backup.as_deref(),
+            );
+            app.embed_ended(Ok(said), now)
         }
         Err(e) => app.embed_ended(Err(format!("{e:#}")), now),
     }
 }
 
-/// Where the logs go while the owner's storage is closed: the partition of
-/// settings, which the recovery mounts for its own log and which outlives a
-/// restart, and only then the memory of the recovery, which does not.
 fn logs_while_storage_is_closed() -> PathBuf {
     let persist = Path::new("/mnt/vendor/persist");
     if skyward_block::mount::is_mount_point(persist).unwrap_or(false) {

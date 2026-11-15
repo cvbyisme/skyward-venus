@@ -1464,6 +1464,27 @@ pub fn exported(l: Lang, folder: &str) -> String {
     tr!(l, "已导出到 {folder}", "已匯出到 {folder}", "Exported to {folder}")
 }
 
+/// The recovery that was running was written into the boot partition, on the
+/// kernel the partition holds: where, how much of it, and where the partition
+/// as it was is kept when a copy was made.
+pub fn embedded(l: Lang, partition: &str, ramdisk: usize, backup: Option<&str>) -> String {
+    let size = bytes(ramdisk as u64);
+    match backup {
+        Some(b) => tr!(
+            l,
+            "已固化到 {partition}（ramdisk {size}），原来的 boot 分区已备份到 {b}",
+            "已固化到 {partition}（ramdisk {size}），原本的 boot 分割區已備份到 {b}",
+            "Kept in {partition}, {size} of ramdisk; the boot partition as it was is in {b}"
+        ),
+        None => tr!(
+            l,
+            "已固化到 {partition}（ramdisk {size}）",
+            "已固化到 {partition}（ramdisk {size}）",
+            "Kept in {partition}, {size} of ramdisk"
+        ),
+    }
+}
+
 /// The logs were not saved, as the system says why.
 pub fn export_failed(l: Lang, why: &str) -> String {
     tr!(l, "导出失败：{why}", "匯出失敗：{why}", "Couldn't export: {why}")
