@@ -345,7 +345,7 @@ fn embed_images() -> Vec<(String, u64)> {
     }
     let mut found = Vec::new();
     see(&in_place(Place::Storage, "Download"), 1, &mut found);
-    found.sort_by(|a, b| b.2.cmp(&a.2));
+    found.sort_by_key(|a| std::cmp::Reverse(a.2));
     found.into_iter().map(|(path, size, _)| (path, size)).collect()
 }
 
