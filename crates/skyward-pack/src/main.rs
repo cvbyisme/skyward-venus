@@ -47,6 +47,12 @@ enum Cmd {
         /// phone or a full update package holds it, ending in its AVB footer.
         #[arg(long)]
         stock: PathBuf,
+        /// A kernel to build on instead of the one the stock image holds, as
+        /// the phone's own boot partition has it: a stock recovery kept in a
+        /// boot partition may hold someone else's kernel, which the modules
+        /// the phone carries were not built for.
+        #[arg(long)]
+        kernel: Option<PathBuf>,
         /// Skyward built for the device (aarch64-linux-android).
         #[arg(long)]
         binary: PathBuf,
@@ -105,9 +111,12 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
+        Cmd::Recovery { stock, kernel, binary, system_init, config, font, mono, mono_license, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
+            if let Some(kernel) = &kernel {
+                img.kernel = std::fs::read(kernel).with_context(|| format!("read {}", kernel.display()))?;
+            }
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
             let device_config = skyward_config::DeviceConfig::load(&config)?;
             let stock_config = device_config.stock.clone();

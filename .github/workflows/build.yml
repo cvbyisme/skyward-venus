@@ -126,6 +126,17 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq lz4
+      # venus keeps its recovery in boot, and the boot partition its stock
+      # dump was taken from holds a kernel from another build: the modules
+      # the phone carries are built for the stock one, which the image is
+      # therefore built on.
+      - name: Take the kernel the recovery is built on
+        if: matrix.device == 'venus'
+        run: |
+          mkdir -p stock
+          curl -fsSL -o stock/kernel.gz https://github.com/cvbyisme/skyward-venus/releases/download/stock-venus/venus-qgki-kernel.gz
+          echo "bd1da74ef7e9d5baf613f5545e8f1ea625817685ab28b99d6e5e5134fd74e7d6  stock/kernel.gz" | sha256sum --check
+          gunzip -f stock/kernel.gz
       - name: Pack the recovery
         id: pack
         env:
@@ -135,7 +146,9 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="${GITHUB_SHA::7}"; fi
           name="skyward-$version-$DEVICE-$STOCK"
           mkdir out
-          tools/skyward-pack recovery --stock stock/recovery.img --binary tools/skyward --system-init tools/system-init \
+          kernel=""
+          if [ -f stock/kernel ]; then kernel="--kernel stock/kernel"; fi
+          tools/skyward-pack recovery --stock stock/recovery.img $kernel --binary tools/skyward --system-init tools/system-init \
             --config "devices/$DEVICE.toml" --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
             --mono-license resources/fonts/KirkMono-OFL.txt --out "out/$name.img"
           echo "name=$name" >> "$GITHUB_OUTPUT"
