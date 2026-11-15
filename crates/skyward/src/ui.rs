@@ -329,15 +329,37 @@ fn slot_now() -> Result<skyward_vab::Slot> {
 }
 
 /// What keeping the recovery left, for the embed page to show.
-fn say_embed(app: &mut App, done: Result<embed::Embedded>) {
+fn say_embed(app: &mut App, done: Result<embed::Embedded>, now: u64) {
     match done {
-        Ok(embedded) => app.embed_ended(Ok(format!(
-            "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk",
-            embedded.partition.display(),
-            embedded.ramdisk
-        ))),
-        Err(e) => app.embed_ended(Err(format!("{e:#}"))),
+        Ok(embedded) => {
+            let kept = match &embedded.backup {
+                Some(b) => format!(
+                    "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk; the boot partition as it was is in {}",
+                    embedded.partition.display(),
+                    embedded.ramdisk,
+                    b.display()
+                ),
+                None => format!(
+                    "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk",
+                    embedded.partition.display(),
+                    embedded.ramdisk
+                ),
+            };
+            app.embed_ended(Ok(kept), now)
+        }
+        Err(e) => app.embed_ended(Err(format!("{e:#}")), now),
     }
+}
+
+/// Where the logs go while the owner's storage is closed: the partition of
+/// settings, which the recovery mounts for its own log and which outlives a
+/// restart, and only then the memory of the recovery, which does not.
+fn logs_while_storage_is_closed() -> PathBuf {
+    let persist = Path::new("/mnt/vendor/persist");
+    if skyward_block::mount::is_mount_point(persist).unwrap_or(false) {
+        return persist.join("skyward-logs").join("logs");
+    }
+    PathBuf::from(TMP_LOGS)
 }
 
 fn embed_images() -> Vec<(String, u64)> {
@@ -2349,7 +2371,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::EmbedImage(image) => {
                         let kept = in_place(Place::Storage, "Download");
                         let done = slot_now().and_then(|slot| embed::embed(Path::new(&image), slot, Some(&kept)));
-                        say_embed(&mut app, done);
+                        say_embed(&mut app, done, now);
                     }
                     // The recovery that is running, packed back into a
                     // ramdisk of its own: no image to be put on the storage
@@ -2357,7 +2379,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::EmbedLive => {
                         let kept = in_place(Place::Storage, "Download");
                         let done = slot_now().and_then(|slot| embed::embed_live(slot, Some(&kept)));
-                        say_embed(&mut app, done);
+                        say_embed(&mut app, done, now);
                     }
                     Effect::SetSlot(slot) => app.slot_switched(set_slot(slot), now),
                     Effect::ReadSystems => systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Read),
@@ -2611,7 +2633,7 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     Effect::ExportLogs { recovery, kernel, storage } => {
                         let into = match storage {
                             true => Path::new(skyward_crypto::data::SDCARD).join(STORAGE_LOGS),
-                            false => PathBuf::from(TMP_LOGS),
+                            false => logs_while_storage_is_closed(),
                         };
                         match export_logs(recovery, kernel, &into, app.state.time_zone) {
                             Ok(folder) => app.report(&skyward_ui::fmt::exported(app.state.lang, &folder.display().to_string()), now),

@@ -545,8 +545,19 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
         }
         skyward_sys::kmsg(&format!("{name} is mounted on {}", at.display()))?;
     }
-    for path in load_modules(cfg, &cfg.modules.load)? {
-        skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+    // A module the kernel refuses, as when the boot partition holds a
+    // kernel the modules were not built for, still leaves the phone's own
+    // programs to be started: opening the data partition needs them more
+    // than it needs the modules.
+    match load_modules(cfg, &cfg.modules.load) {
+        Ok(paths) => {
+            for path in paths {
+                skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+            }
+        }
+        Err(e) => {
+            skyward_sys::kmsg(&format!("the modules were not loaded, and the phone's own programs are started without them: {e:#}"))?;
+        }
     }
     if !cfg.owners.is_empty() {
         let handed = hand_over(&cfg.owners)?;

@@ -3475,10 +3475,13 @@ impl App {
     }
 
     /// How keeping the recovery in the boot partition went.
-    pub fn embed_ended(&mut self, end: std::result::Result<String, String>) {
+    pub fn embed_ended(&mut self, end: std::result::Result<String, String>, now: u64) {
         if let Some(e) = self.state.embed.as_mut() {
             e.outcome = Some(end);
         }
+        // The panel is only drawn again when the page asks for it: what the
+        // write came to has to wake it, or the page stays as it was.
+        self.wake(now);
         self.refresh();
     }
 
