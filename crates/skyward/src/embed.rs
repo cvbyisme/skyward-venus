@@ -10,7 +10,7 @@
 //! from, and what makes a recovery started with `fastboot boot` stay.
 
 use anyhow::{bail, Context, Result};
-use skyward_bootimg::BootImage;
+use skyward_bootimg::{BootImage, Ramdisk};
 use skyward_block::BY_NAME;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
@@ -42,7 +42,7 @@ pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -
         bail!("{} holds no ramdisk", image.display());
     }
     let mut boot = BootImage::parse(&was).with_context(|| format!("read what {} holds", partition.display()))?;
-    boot.ramdisk = std::mem::take(&mut mine.ramdisk);
+    boot.ramdisk = unpinned(image, std::mem::take(&mut mine.ramdisk))?;
     let ramdisk = boot.ramdisk.len();
     let bytes = boot.to_bytes().context("build the image")?;
     if bytes.len() > size {
@@ -59,6 +59,33 @@ pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -
     };
     write(&partition, &bytes, size)?;
     Ok(Embedded { partition, backup, ramdisk })
+}
+
+/// The ramdisk `image` holds, with the one property that pins every start of
+/// the phone to the recovery taken out.
+///
+/// An image booted once by hand has to say that it is the recovery, because
+/// the bootloader marks every image it loads by hand as a normal boot. One
+/// written into the boot partition must not: the bootloader answers whether a
+/// start is a normal one or a recovery, and a ramdisk that answers for it
+/// leaves the system unable to start at all.
+fn unpinned(image: &Path, ramdisk: Vec<u8>) -> Result<Vec<u8>> {
+    let mut rd = Ramdisk::decode(&ramdisk).with_context(|| format!("read the ramdisk of {}", image.display()))?;
+    let name = skyward_config::ramdisk::PROP_DEFAULT;
+    let Some(props) = rd.find(name) else {
+        return rd.encode().context("write the ramdisk");
+    };
+    let kept: Vec<u8> = props
+        .data
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.starts_with(b"ro.boot.force_normal_boot="))
+        .flat_map(|line| line.iter().copied().chain(std::iter::once(b'\n')))
+        .collect();
+    if kept.len() == props.data.len() {
+        return rd.encode().context("write the ramdisk");
+    }
+    rd.replace(name, kept).with_context(|| format!("rewrite {name}"))?;
+    rd.encode().context("write the ramdisk")
 }
 
 /// Put `bytes` at the start of `path` and leave nothing of what the partition
