@@ -2248,6 +2248,7 @@ dependencies = [
  "skyward-backup",
  "skyward-binder",
  "skyward-block",
+ "skyward-bootimg",
  "skyward-config",
  "skyward-crypto",
  "skyward-files",

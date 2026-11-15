@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "android")]
 mod backup;
 #[cfg(target_os = "android")]
+mod embed;
+#[cfg(target_os = "android")]
 mod decrypt;
 #[cfg(target_os = "android")]
 mod filework;
@@ -77,6 +79,15 @@ enum Cmd {
     /// Reboot through init: system, recovery, fastboot, bootloader, edl, or
     /// off.
     Reboot { target: String },
+    /// Keep the recovery that is running in the phone's boot partition: the
+    /// ramdisk of `image`, on the kernel that partition already holds.
+    Embed {
+        /// The image holding the recovery's ramdisk.
+        image: PathBuf,
+        /// Where to keep the boot partition as it was, before it is written.
+        #[arg(long)]
+        backup: Option<PathBuf>,
+    },
     /// Print the bootloader control block in misc.
     Bcb,
     /// Print the logical partition metadata in super.
@@ -240,6 +251,17 @@ fn main() -> Result<()> {
             let p = Power::parse(&target).ok_or_else(|| anyhow!("unknown target {target:?}"))?;
             skyward_sys::power(p)
         }
+        #[cfg(target_os = "android")]
+        Cmd::Embed { image, backup } => {
+            let kept = embed::embed(&image, booted_slot()?, backup.as_deref())?;
+            println!("wrote {} ({} bytes of ramdisk)", kept.partition.display(), kept.ramdisk);
+            if let Some(b) = &kept.backup {
+                println!("the boot partition as it was is in {}", b.display());
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "android"))]
+        Cmd::Embed { .. } => Err(anyhow!("only the phone has a boot partition to write")),
         Cmd::Bcb => {
             let b = bcb::read(&bcb::misc())?;
             println!("command = {:?}", b.command);

@@ -19,6 +19,7 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-sys = { path = "../skyward-sys" }
 skyward-lp = { path = "../skyward-lp" }
+skyward-bootimg = { path = "../skyward-bootimg" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
