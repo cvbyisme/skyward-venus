@@ -86,6 +86,7 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Editor => editor(cx),
         Screen::Terminal => terminal(cx),
         Screen::Relabel => relabel(cx),
+        Screen::Embed => embed(cx),
         Screen::Filesystems => filesystems(cx),
         Screen::Filesystem => filesystem(cx),
         Screen::PartWork => part_work(cx),
@@ -137,6 +138,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
         Confirm::SwitchSystem => (["滑动以切换并重启", "滑動以切換並重新啟動", "Slide to switch and reboot"], false),
         Confirm::RemoveSystem => (["滑动以删除", "滑動以刪除", "Slide to remove"], true),
         Confirm::InstallSystem => (INSTALL, false),
+        Confirm::Embed => (["滑动以固化", "滑動以固化", "Slide to keep"], true),
     };
     (s.lang.pick(label), danger)
 }
@@ -2205,6 +2207,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal),
         Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
+        Row::new(l.pick(EMBED)).icon(PURPLE, Icon::Install),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
         Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(update_value(cx))),
     ]);
@@ -2212,6 +2215,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Files),
         Action::Open(Screen::Terminal),
         Action::Open(Screen::Relabel),
+        Action::Open(Screen::Embed),
         Action::Open(Screen::Filesystems),
         Action::Open(Screen::Logs),
         Action::Open(Screen::Update),
@@ -2296,6 +2300,58 @@ pub fn relabel(cx: &Ctx) -> Frame {
         }
     }
     Frame { back: job.outcome.is_some(), ..Frame::new(t, c, out, title, top) }
+}
+
+const EMBED: Text = ["固化为常驻恢复", "固化為常駐復原", "Keep as recovery"];
+const READING_IMAGES: Text = ["正在查找镜像", "正在尋找影像", "Looking for images"];
+const NO_IMAGES: Text = ["下载目录里没有镜像", "下載目錄裡沒有影像", "No images in the download folder"];
+
+/// Keeping the recovery that is running in the phone's boot partition, from
+/// an image on the storage: what it does, which images it can be taken from,
+/// and a swipe to keep it. The kernel stays the phone's own.
+pub fn embed(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let title = l.pick(EMBED);
+    let what = l.pick([
+        "把正在运行的恢复写入手机的 boot 分区，保留手机原有的内核。之后开机、误刷 boot，都仍然进入 Skyward。",
+        "把正在執行的復原寫入手機的 boot 分割區，保留手機原有的核心。之後開機、誤刷 boot，仍然會進入 Skyward。",
+        "Writes the recovery that is running into the phone's boot partition, on the phone's own kernel. After this, booting it needs neither the computer nor the cable.",
+    ]);
+    let y = widgets::paragraph(&mut c, t, f, top, what);
+    let Some(page) = &s.embed else {
+        widgets::list(&mut c, t, f, y, &[Row::new(l.pick(READING_IMAGES)).trail(Trail::None)]);
+        return Frame::new(t, c, out, title, top);
+    };
+    let y = if page.images.is_empty() {
+        widgets::list(&mut c, t, f, y, &[Row::new(l.pick(NO_IMAGES)).trail(Trail::None)]).bottom
+    } else {
+        let subs: Vec<String> = page.images.iter().map(|(_, size)| fmt::bytes(*size)).collect();
+        let names: Vec<String> = page.images.iter().map(|(path, _)| path.rsplit('/').next().unwrap_or(path).to_string()).collect();
+        let rows: Vec<Row> = names
+            .iter()
+            .zip(&subs)
+            .enumerate()
+            .map(|(k, (name, sub))| Row::new(name).subtitle(sub).trail(Trail::Check(page.chosen == Some(k))))
+            .collect();
+        let list = widgets::list(&mut c, t, f, y, &rows);
+        out.extend(hits(&list.rows, &(0..page.images.len()).map(Action::EmbedImage).collect::<Vec<_>>()));
+        list.bottom
+    };
+    let label = l.pick(["滑动以固化", "滑動以固化", "Slide to keep"]);
+    let track = widgets::confirm(&mut c, t, f, y + t.m.card_gap, label, true, s.confirm);
+    out.push(Hit { rect: track, action: Action::Confirm(Confirm::Embed) });
+    let mut bottom = track.y + track.h;
+    if let Some(end) = &page.outcome {
+        let note = match end {
+            Ok(said) => said.clone(),
+            Err(why) => tr!(l, "固化失败：{why}", "固化失敗：{why}", "Couldn't keep it: {why}"),
+        };
+        bottom = widgets::footnote(&mut c, t, f, bottom, &note);
+    }
+    Frame::new(t, fit(c, t, bottom), out, title, top)
 }
 
 /// The partitions whose filesystems can be repaired or made afresh as

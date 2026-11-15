@@ -1,5 +1,6 @@
 use crate::backup;
 use crate::decrypt::{self, Decryptor};
+use crate::embed;
 use crate::filework;
 use crate::haptics::Haptics;
 use crate::relabel;
@@ -318,6 +319,36 @@ fn list_place(app: &mut App, place: Place, folder: String) -> Result<()> {
 
 /// Where `path`, from the top of `place`, is: internal storage is the
 /// owner's shared storage, where the data partition shows it.
+/// The images on the owner's storage a recovery can be kept from: every
+/// `.img` file under the download folder or one folder below it, the newest
+/// first, with its size.
+fn embed_images() -> Vec<(String, u64)> {
+    fn see(folder: &Path, depth: u8, found: &mut Vec<(String, u64, u64)>) {
+        let Ok(entries) = fs::read_dir(folder) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                if depth > 0 {
+                    see(&path, depth - 1, found);
+                }
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("img")) {
+                let Ok(meta) = entry.metadata() else { continue };
+                let made = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs());
+                found.push((path.to_string_lossy().into_owned(), meta.len(), made));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    see(&in_place(Place::Storage, "Download"), 1, &mut found);
+    found.sort_by(|a, b| b.2.cmp(&a.2));
+    found.into_iter().map(|(path, size, _)| (path, size)).collect()
+}
+
 fn in_place(place: Place, path: &str) -> PathBuf {
     let top = match place {
         Place::Storage => Path::new(skyward_crypto::data::SDCARD),
@@ -2294,6 +2325,24 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     },
                     Effect::ReadMounts => app.set_mounts(mounts()),
                     Effect::ReadSlots => app.set_boot_slots(read_slots()),
+                    Effect::ReadEmbedImages => app.set_embed_images(embed_images()),
+                    // The boot partition is written here, on this thread, as
+                    // the swipe asked: it is one write and then done.
+                    Effect::EmbedImage(image) => {
+                        let kept = in_place(Place::Storage, "Download");
+                        let done = skyward_vab::current_slot()
+                            .context("not an A/B phone")
+                            .and_then(|slot| slot.context("not an A/B phone"))
+                            .and_then(|slot| embed::embed(Path::new(&image), slot, Some(&kept)));
+                        match done {
+                            Ok(embedded) => app.embed_ended(Ok(format!(
+                                "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk",
+                                embedded.partition.display(),
+                                embedded.ramdisk
+                            ))),
+                            Err(e) => app.embed_ended(Err(format!("{e:#}"))),
+                        }
+                    }
                     Effect::SetSlot(slot) => app.slot_switched(set_slot(slot), now),
                     Effect::ReadSystems => systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Read),
                     // An install still under way may yet write the boot

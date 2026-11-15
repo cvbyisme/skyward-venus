@@ -62,6 +62,9 @@ pub enum Screen {
     BackupJob,
     /// Tools for the experienced: files, a terminal, the logs.
     Advanced,
+    /// Keeping the recovery that is running in the phone's boot partition,
+    /// from an image it was started from.
+    Embed,
     Files,
     /// One file, and what can be done with it.
     FileInfo,
@@ -434,6 +437,19 @@ pub struct RelabelJob {
     pub outcome: Option<JobEnd>,
     /// Stopping was asked for and is under way.
     pub stopping: bool,
+}
+
+/// Keeping the recovery that is running in the boot partition, as its page
+/// shows it: the images it can be taken from, the one chosen, and how
+/// keeping it went.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Embed {
+    /// Each image's path and size, the newest first.
+    pub images: Vec<(String, u64)>,
+    /// Which of them is chosen.
+    pub chosen: Option<usize>,
+    /// How keeping it went, once it was asked for.
+    pub outcome: Option<std::result::Result<String, String>>,
 }
 
 /// A partition the filesystem page lists, as the runtime read it.
@@ -870,6 +886,8 @@ pub enum Confirm {
     Relabel,
     /// Do to the partition the filesystem page shows what it chose.
     Filesystem,
+    /// Keep the recovery that is running in the boot partition.
+    Embed,
     /// Switch to the system picked on the systems page, and restart into
     /// it.
     SwitchSystem,
@@ -1238,6 +1256,8 @@ pub enum Action {
     /// Open the file manager's entry at this place in the folder: a folder
     /// to look in, a text file to edit, or what can be done with any other.
     OpenEntry(usize),
+    /// Choose the image at this place in the list the embed page shows.
+    EmbedImage(usize),
     /// Open the terminal in the folder the file manager shows.
     TerminalHere,
     /// Open the entry at this place in a place's folder: a folder to look
@@ -1711,6 +1731,8 @@ pub struct State {
     /// Giving the data partition's files their SELinux labels under way, or
     /// how it last ended.
     pub relabel: Option<RelabelJob>,
+    /// The images the recovery can be kept from, and how that went.
+    pub embed: Option<Embed>,
     /// The filesystem page's partitions, as the runtime last read them, or
     /// why it could not; none until it has.
     pub filesystems: Option<Result<Vec<FsRow>, String>>,
@@ -1817,6 +1839,7 @@ impl Default for State {
             clash: None,
             job: None,
             relabel: None,
+            embed: None,
             filesystems: None,
             fs_chosen: 0,
             fs_action: FsAction::Repair,
@@ -1972,6 +1995,12 @@ pub enum Effect {
     /// Start installing the file at this full path, opened in the file
     /// manager, telling how it goes as [`Effect::Sideload`] does.
     InstallPath(String),
+    /// Read the images the embed page offers, telling them with
+    /// [`App::set_embed_images`].
+    ReadEmbedImages,
+    /// Keep the ramdisk of the image at this path in the boot partition the
+    /// phone starts from, telling how it went with [`App::embed_ended`].
+    EmbedImage(String),
     /// Write the image the installer holds to `partition` in the slots
     /// `pick` means.
     Flash { partition: &'static str, pick: Pick },
@@ -3432,6 +3461,21 @@ impl App {
 
     /// Giving the data partition's files their labels has started: its page
     /// follows how far it comes.
+    /// What can be kept, as the runtime read them: each image's path and size.
+    pub fn set_embed_images(&mut self, images: Vec<(String, u64)>) {
+        let chosen = self.state.embed.as_ref().and_then(|e| e.chosen).filter(|n| *n < images.len());
+        self.state.embed = Some(Embed { images, chosen, outcome: None });
+        self.refresh();
+    }
+
+    /// How keeping the recovery in the boot partition went.
+    pub fn embed_ended(&mut self, end: std::result::Result<String, String>) {
+        if let Some(e) = self.state.embed.as_mut() {
+            e.outcome = Some(end);
+        }
+        self.refresh();
+    }
+
     pub fn relabel_started(&mut self) {
         self.state.relabel = Some(RelabelJob::default());
         self.refresh();
@@ -5067,6 +5111,7 @@ impl App {
             Screen::Systems => vec![Effect::ReadSystems],
             Screen::Restore => vec![self.find_backups()],
             Screen::Files => vec![Effect::ReadDir(self.state.files.path.clone())],
+            Screen::Embed => vec![Effect::ReadEmbedImages],
             Screen::Choose(place) if self.state.place_open(place) => vec![Effect::ReadPlace(place, self.state.folder(s).path.clone())],
             Screen::Search => {
                 self.state.search.clear();
@@ -5135,6 +5180,13 @@ impl App {
                     self.open(s);
                 }
                 return self.arrive_at(s);
+            }
+            Action::EmbedImage(n) => {
+                if let Some(e) = self.state.embed.as_mut() {
+                    e.chosen = Some(n);
+                    e.outcome = None;
+                    self.refresh();
+                }
             }
             Action::OpenData => return self.open_data(),
             Action::Skip => {
@@ -6440,6 +6492,14 @@ impl App {
     fn confirmed(&mut self, which: Confirm, now: u64) -> Vec<Effect> {
         let (l, mut fx) = (self.state.lang, Vec::new());
         match which {
+            Confirm::Embed => {
+                let chosen = self.state.embed.as_ref().and_then(|e| e.chosen);
+                let image = chosen.and_then(|n| self.state.embed.as_ref().and_then(|e| e.images.get(n)).cloned());
+                match image {
+                    Some((path, _)) => fx.push(Effect::EmbedImage(path)),
+                    None => self.say(l.pick(["请先选择一个镜像", "請先選擇一個鏡像", "Choose an image first"]), now),
+                }
+            }
             Confirm::Reboot => fx.push(Effect::Reboot(TARGETS[self.state.reboot])),
             Confirm::Wipe => {
                 let chosen: Vec<Wipe> = WIPES.iter().zip(self.state.wipe).filter(|(_, on)| *on).map(|(&w, _)| w).collect();
