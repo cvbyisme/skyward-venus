@@ -448,6 +448,9 @@ pub struct Embed {
     pub images: Vec<(String, u64)>,
     /// Which of them is chosen.
     pub chosen: Option<usize>,
+    /// Whether what is chosen is the recovery that is running, packed back
+    /// into a ramdisk of its own, rather than an image on the storage.
+    pub live: bool,
     /// How keeping it went, once it was asked for.
     pub outcome: Option<std::result::Result<String, String>>,
 }
@@ -1258,6 +1261,7 @@ pub enum Action {
     OpenEntry(usize),
     /// Choose the image at this place in the list the embed page shows.
     EmbedImage(usize),
+    EmbedLive,
     /// Open the terminal in the folder the file manager shows.
     TerminalHere,
     /// Open the entry at this place in a place's folder: a folder to look
@@ -2001,6 +2005,7 @@ pub enum Effect {
     /// Keep the ramdisk of the image at this path in the boot partition the
     /// phone starts from, telling how it went with [`App::embed_ended`].
     EmbedImage(String),
+    EmbedLive,
     /// Write the image the installer holds to `partition` in the slots
     /// `pick` means.
     Flash { partition: &'static str, pick: Pick },
@@ -3464,7 +3469,8 @@ impl App {
     /// What can be kept, as the runtime read them: each image's path and size.
     pub fn set_embed_images(&mut self, images: Vec<(String, u64)>) {
         let chosen = self.state.embed.as_ref().and_then(|e| e.chosen).filter(|n| *n < images.len());
-        self.state.embed = Some(Embed { images, chosen, outcome: None });
+        let live = self.state.embed.as_ref().is_some_and(|e| e.live);
+        self.state.embed = Some(Embed { images, chosen, live, outcome: None });
         self.refresh();
     }
 
@@ -5184,6 +5190,15 @@ impl App {
             Action::EmbedImage(n) => {
                 if let Some(e) = self.state.embed.as_mut() {
                     e.chosen = Some(n);
+                    e.live = false;
+                    e.outcome = None;
+                    self.refresh();
+                }
+            }
+            Action::EmbedLive => {
+                if let Some(e) = self.state.embed.as_mut() {
+                    e.chosen = None;
+                    e.live = true;
                     e.outcome = None;
                     self.refresh();
                 }
@@ -6493,11 +6508,13 @@ impl App {
         let (l, mut fx) = (self.state.lang, Vec::new());
         match which {
             Confirm::Embed => {
+                let live = self.state.embed.as_ref().is_some_and(|e| e.live);
                 let chosen = self.state.embed.as_ref().and_then(|e| e.chosen);
                 let image = chosen.and_then(|n| self.state.embed.as_ref().and_then(|e| e.images.get(n)).cloned());
-                match image {
-                    Some((path, _)) => fx.push(Effect::EmbedImage(path)),
-                    None => self.say(l.pick(["请先选择一个镜像", "請先選擇一個鏡像", "Choose an image first"]), now),
+                match (live, image) {
+                    (true, _) => fx.push(Effect::EmbedLive),
+                    (false, Some((path, _))) => fx.push(Effect::EmbedImage(path)),
+                    (false, None) => self.say(l.pick(["请先选择一个镜像", "請先選擇一個鏡像", "Choose an image first"]), now),
                 }
             }
             Confirm::Reboot => fx.push(Effect::Reboot(TARGETS[self.state.reboot])),

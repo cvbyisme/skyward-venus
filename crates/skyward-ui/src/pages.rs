@@ -2305,6 +2305,8 @@ pub fn relabel(cx: &Ctx) -> Frame {
 const EMBED: Text = ["固化为常驻恢复", "固化為常駐復原", "Keep as recovery"];
 const READING_IMAGES: Text = ["正在查找镜像", "正在尋找影像", "Looking for images"];
 const NO_IMAGES: Text = ["下载目录里没有镜像", "下載目錄裡沒有影像", "No images in the download folder"];
+const LIVE: Text = ["这个正在运行的恢复", "這個正在執行的復原", "This recovery, as it runs"];
+const LIVE_SAID: Text = ["无需镜像，把当下这一份打包写进 boot 分区", "無需影像，把當下這一份打包寫入 boot 分割區", "No image: what is running now, packed and written to boot"];
 
 /// Keeping the recovery that is running in the phone's boot partition, from
 /// an image on the storage: what it does, which images it can be taken from,
@@ -2325,20 +2327,27 @@ pub fn embed(cx: &Ctx) -> Frame {
         widgets::list(&mut c, t, f, y, &[Row::new(l.pick(READING_IMAGES)).trail(Trail::None)]);
         return Frame::new(t, c, out, title, top);
     };
-    let y = if page.images.is_empty() {
-        widgets::list(&mut c, t, f, y, &[Row::new(l.pick(NO_IMAGES)).trail(Trail::None)]).bottom
-    } else {
-        let subs: Vec<String> = page.images.iter().map(|(_, size)| fmt::bytes(*size)).collect();
-        let names: Vec<String> = page.images.iter().map(|(path, _)| path.rsplit('/').next().unwrap_or(path).to_string()).collect();
-        let rows: Vec<Row> = names
+    let subs: Vec<String> = page.images.iter().map(|(_, size)| fmt::bytes(*size)).collect();
+    let names: Vec<String> = page.images.iter().map(|(path, _)| path.rsplit('/').next().unwrap_or(path).to_string()).collect();
+    let mut rows: Vec<Row> = Vec::with_capacity(names.len() + 1);
+    rows.push(Row::new(l.pick(LIVE)).subtitle(l.pick(LIVE_SAID)).trail(Trail::Check(page.live)));
+    rows.extend(
+        names
             .iter()
             .zip(&subs)
             .enumerate()
-            .map(|(k, (name, sub))| Row::new(name).subtitle(sub).trail(Trail::Check(page.chosen == Some(k))))
-            .collect();
-        let list = widgets::list(&mut c, t, f, y, &rows);
-        out.extend(hits(&list.rows, &(0..page.images.len()).map(Action::EmbedImage).collect::<Vec<_>>()));
-        list.bottom
+            .map(|(k, (name, sub))| Row::new(name).subtitle(sub).trail(Trail::Check(!page.live && page.chosen == Some(k)))),
+    );
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    let mut taking: Vec<Action> = Vec::with_capacity(rows.len());
+    taking.push(Action::EmbedLive);
+    taking.extend((0..page.images.len()).map(Action::EmbedImage));
+    out.extend(hits(&list.rows, &taking));
+    let y = list.bottom;
+    let y = if page.images.is_empty() {
+        widgets::footnote(&mut c, t, f, y, l.pick(NO_IMAGES))
+    } else {
+        y
     };
     let label = l.pick(["滑动以固化", "滑動以固化", "Slide to keep"]);
     let track = widgets::confirm(&mut c, t, f, y + t.m.card_gap, label, true, s.confirm);

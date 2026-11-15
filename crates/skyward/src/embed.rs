@@ -34,17 +34,32 @@ pub struct Embedded {
 /// bootloader hands the kernel, and the versions the image names, stay the
 /// ones this phone already runs.
 pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -> Result<Embedded> {
-    let partition = Path::new(BY_NAME).join(format!("boot{}", slot.suffix()));
-    log(&format!("keeping {} in {}", image.display(), partition.display()));
-    let was = fs::read(&partition).with_context(|| format!("read {}", partition.display()))?;
-    let size = was.len();
-    log(&format!("{} holds {size} bytes", partition.display()));
-    let mut mine = BootImage::read(image)?;
+    let mut mine = BootImage::read(image).with_context(|| format!("read {}", image.display()))?;
     if mine.ramdisk.is_empty() {
         bail!("{} holds no ramdisk", image.display());
     }
+    let ramdisk = unpinned(image, std::mem::take(&mut mine.ramdisk))?;
+    embed_ramdisk(ramdisk, slot, backup_dir)
+}
+
+/// Write the recovery that is running into the boot partition `slot` starts
+/// from, as [`embed`] writes the one an image holds: the root it runs on,
+/// packed back into a ramdisk, on the kernel the partition already carries.
+pub fn embed_live(slot: skyward_vab::Slot, backup_dir: Option<&Path>) -> Result<Embedded> {
+    let ramdisk = crate::repack::live().context("pack the recovery that is running")?;
+    embed_ramdisk(ramdisk, slot, backup_dir)
+}
+
+/// What both write: `ramdisk`, already gzip, into the boot partition of
+/// `slot`, the kernel and header it holds left as they are.
+fn embed_ramdisk(ramdisk: Vec<u8>, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -> Result<Embedded> {
+    let partition = Path::new(BY_NAME).join(format!("boot{}", slot.suffix()));
+    log(&format!("keeping the recovery in {}", partition.display()));
+    let was = fs::read(&partition).with_context(|| format!("read {}", partition.display()))?;
+    let size = was.len();
+    log(&format!("{} holds {size} bytes", partition.display()));
     let mut boot = BootImage::parse(&was).with_context(|| format!("read what {} holds", partition.display()))?;
-    boot.ramdisk = unpinned(image, std::mem::take(&mut mine.ramdisk))?;
+    boot.ramdisk = ramdisk;
     let ramdisk = boot.ramdisk.len();
     let bytes = boot.to_bytes().context("build the image")?;
     log(&format!("the image comes to {} bytes with {} of ramdisk", bytes.len(), ramdisk));
@@ -57,6 +72,7 @@ pub fn embed(image: &Path, slot: skyward_vab::Slot, backup_dir: Option<&Path>) -
             fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
             let path = dir.join(format!("boot{}-{}.img", slot.suffix(), stamp()));
             fs::write(&path, &was).with_context(|| format!("write {}", path.display()))?;
+            log(&format!("the partition as it was is in {}", path.display()));
             Some(path)
         }
     };

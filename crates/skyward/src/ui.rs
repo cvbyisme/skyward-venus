@@ -322,6 +322,24 @@ fn list_place(app: &mut App, place: Place, folder: String) -> Result<()> {
 /// The images on the owner's storage a recovery can be kept from: every
 /// `.img` file under the download folder or one folder below it, the newest
 /// first, with its size.
+/// The slot the phone runs from, which is the one whose boot partition is
+/// written.
+fn slot_now() -> Result<skyward_vab::Slot> {
+    skyward_vab::current_slot()?.context("not an A/B phone")
+}
+
+/// What keeping the recovery left, for the embed page to show.
+fn say_embed(app: &mut App, done: Result<embed::Embedded>) {
+    match done {
+        Ok(embedded) => app.embed_ended(Ok(format!(
+            "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk",
+            embedded.partition.display(),
+            embedded.ramdisk
+        ))),
+        Err(e) => app.embed_ended(Err(format!("{e:#}"))),
+    }
+}
+
 fn embed_images() -> Vec<(String, u64)> {
     fn see(folder: &Path, depth: u8, found: &mut Vec<(String, u64, u64)>) {
         let Ok(entries) = fs::read_dir(folder) else { return };
@@ -2330,18 +2348,16 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                     // the swipe asked: it is one write and then done.
                     Effect::EmbedImage(image) => {
                         let kept = in_place(Place::Storage, "Download");
-                        let done = skyward_vab::current_slot()
-                            .context("not an A/B phone")
-                            .and_then(|slot| slot.context("not an A/B phone"))
-                            .and_then(|slot| embed::embed(Path::new(&image), slot, Some(&kept)));
-                        match done {
-                            Ok(embedded) => app.embed_ended(Ok(format!(
-                                "kept the recovery in {} on the phone's own kernel, {} bytes of ramdisk",
-                                embedded.partition.display(),
-                                embedded.ramdisk
-                            ))),
-                            Err(e) => app.embed_ended(Err(format!("{e:#}"))),
-                        }
+                        let done = slot_now().and_then(|slot| embed::embed(Path::new(&image), slot, Some(&kept)));
+                        say_embed(&mut app, done);
+                    }
+                    // The recovery that is running, packed back into a
+                    // ramdisk of its own: no image to be put on the storage
+                    // first, and the same kernel the partition holds.
+                    Effect::EmbedLive => {
+                        let kept = in_place(Place::Storage, "Download");
+                        let done = slot_now().and_then(|slot| embed::embed_live(slot, Some(&kept)));
+                        say_embed(&mut app, done);
                     }
                     Effect::SetSlot(slot) => app.slot_switched(set_slot(slot), now),
                     Effect::ReadSystems => systems_worker.as_mut().context("this phone holds no second system")?.send(systems::Task::Read),

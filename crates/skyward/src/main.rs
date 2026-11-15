@@ -27,6 +27,7 @@ mod pty;
 mod readings;
 #[cfg(target_os = "android")]
 mod relabel;
+mod repack;
 #[cfg(target_os = "android")]
 mod secure;
 #[cfg(target_os = "android")]
@@ -82,8 +83,9 @@ enum Cmd {
     /// Keep the recovery that is running in the phone's boot partition: the
     /// ramdisk of `image`, on the kernel that partition already holds.
     Embed {
-        /// The image holding the recovery's ramdisk.
-        image: PathBuf,
+        /// The image holding the recovery's ramdisk. Left out, the recovery
+        /// that is running is packed back into a ramdisk of its own.
+        image: Option<PathBuf>,
         /// Where to keep the boot partition as it was, before it is written.
         #[arg(long)]
         backup: Option<PathBuf>,
@@ -253,7 +255,10 @@ fn main() -> Result<()> {
         }
         #[cfg(target_os = "android")]
         Cmd::Embed { image, backup } => {
-            let kept = embed::embed(&image, booted_slot()?, backup.as_deref())?;
+            let kept = match &image {
+                Some(image) => embed::embed(image, booted_slot()?, backup.as_deref())?,
+                None => embed::embed_live(booted_slot()?, backup.as_deref())?,
+            };
             println!("wrote {} ({} bytes of ramdisk)", kept.partition.display(), kept.ramdisk);
             if let Some(b) = &kept.backup {
                 println!("the boot partition as it was is in {}", b.display());
