@@ -742,6 +742,7 @@ const NOBODY: u32 = u32::MAX;
 /// it. Only the file is shown at the standard place: the partition itself
 /// stays where the recovery put it, because /system also holds the
 /// recovery's own libraries.
+#[cfg(target_os = "android")]
 const PROPERTY_FILES: [(&str, &str); 4] = [
     ("system", "build.prop"),
     ("system_ext", "etc/build.prop"),
@@ -753,6 +754,7 @@ const PROPERTY_FILES: [(&str, &str); 4] = [
 /// it, without moving the partition: a program of the installed system
 /// reads its generation from there, and a key service that finds no
 /// generation refuses every key of the phone's.
+#[cfg(target_os = "android")]
 fn show_property_files(slot: skyward_vab::Slot) -> Result<Vec<String>> {
     let mut shown = Vec::new();
     for mounted in skyward_vab::mounted_partitions(slot)? {
