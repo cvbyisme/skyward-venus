@@ -61,10 +61,12 @@ pub fn add_missing(services: &mut Vec<Service>) -> Result<Vec<String>> {
         if services.iter().any(|s| s.ready_service.as_deref() == Some(&described.name) || s.ready_hardware_service.as_deref() == Some(&described.name)) {
             continue;
         }
-        let Some(program) = programs.iter().find(|(name, program)| name.contains(kind) && Path::new(&program.path).is_file()) else {
+        let found = programs.iter().find(|pair| pair.0.contains(kind) && Path::new(&pair.1.path).is_file());
+        let Some(pair) = found else {
             said.push(format!("{} is described by the phone and no program of this phone serves it", described.name));
             continue;
         };
+        let program = pair.1;
         let service = Service {
             path: program.path.clone(),
             args: program.args.clone(),
