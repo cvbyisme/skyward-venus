@@ -477,6 +477,9 @@ fn main() -> Result<()> {
                 data::State::Opened => println!("the files on this phone are encrypted and every layer of them is open"),
                 data::State::Sealed { layer, why } => println!("the files on this phone are encrypted and {layer:?} is still closed: {why}"),
             }
+            if let Some(why) = &opening.shared_storage {
+                println!("the shared storage is not shown at /sdcard: {why}");
+            }
             let mut closed = opening.closed;
             let asked = closed.iter().find(|c| !c.made_up).map(|c| c.user);
             if let (Some(credential), Some(user)) = (&credential, asked) {

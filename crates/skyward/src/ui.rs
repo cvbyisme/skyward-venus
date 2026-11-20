@@ -1785,6 +1785,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                         if let Some(mounted) = &opening.mounted {
                             log_mounted(mounted)?;
                         }
+                        if let Some(why) = &opening.shared_storage {
+                            skyward_sys::kmsg(&format!("the shared storage is not shown at /sdcard: {why}"))?;
+                        }
                         closed = opening.closed;
                         show_closed(&mut app, &closed)?;
                     }
@@ -2119,6 +2122,9 @@ pub fn run(cfg: &DeviceConfig, font: &Path, mono: &Path, request: bcb::Request, 
                 decrypt::Ended::Opened(Ok(opening)) => {
                     if let Some(mounted) = &opening.mounted {
                         log_mounted(mounted)?;
+                    }
+                    if let Some(why) = &opening.shared_storage {
+                        skyward_sys::kmsg(&format!("the shared storage is not shown at /sdcard: {why}"))?;
                     }
                     closed = opening.closed;
                     show_closed(&mut app, &closed)?;

@@ -170,19 +170,37 @@ pub fn unmap() -> Result<()> {
 pub fn show_owner_storage() -> Result<()> {
     let at = Path::new(SDCARD);
     let from = Path::new(SHARED_STORAGE).join(OWNER.to_string());
-    if mount::is_mount_point(at)? {
+    // Where /sdcard is a link, what is shown is what it leads to: a mount
+    // over a link itself is refused, and the recovery's own /sdcard is a
+    // link on the builds of some phones.
+    let to = match std::fs::read_link(at) {
+        Ok(leads) => {
+            let leads = match leads.is_absolute() {
+                true => leads,
+                false => Path::new("/").join(leads),
+            };
+            if !leads.exists() {
+                std::fs::create_dir_all(&leads).with_context(|| format!("make {}", leads.display()))?;
+            }
+            leads
+        }
+        Err(_) => at.to_path_buf(),
+    };
+    if !from.is_dir() {
+        anyhow::bail!("{} is not a directory on this data partition", from.display());
+    }
+    if mount::is_mount_point(&to)? {
         return Ok(());
     }
     // Only an answer that says the key is not in stops it: a question that
     // cannot be answered at all is a kernel that does not speak this way of
-    // encryption, which is a phone that does not encrypt, and its storage
-    // is shown as it always was.
+    // encryption, which is a phone that does not encrypt.
     match crate::fscrypt::unlocked(Path::new(SHARED_STORAGE)) {
         Ok(false) => anyhow::bail!("the shared storage is encrypted and its key is not in, so it is not shown at {SDCARD}"),
         _ => {}
     }
     match crate::fscrypt::readable(&from) {
-        true => mount::bind(&from, at),
+        true => mount::bind(&from, &to).with_context(|| format!("show {} at {}", from.display(), to.display())),
         false => anyhow::bail!("{} cannot be listed, so it is not shown at {SDCARD}", from.display()),
     }
 }
@@ -290,6 +308,10 @@ pub struct Opening {
     /// How it was mounted, where this mounted it rather than an earlier
     /// run of the recovery.
     pub mounted: Option<Opened>,
+    /// Why the owner's shared storage is not shown at /sdcard, where it is
+    /// not: a page that shows an empty /sdcard with no word about it looks
+    /// like a partition with nothing in it.
+    pub shared_storage: Option<String>,
     /// The users whose own files are still closed, the owner first.
     pub closed: Vec<Closed>,
 }
@@ -310,8 +332,8 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
     if !Path::new(FILE_MODE).exists() {
         // Nothing is closed. The shared storage is shown where it can be
         // read, as a phone that encrypts nothing can be.
-        let _ = show_owner_storage();
-        return Ok(Opening { mounted, closed: Vec::new() });
+        let shared_storage = show_owner_storage().err().map(|e| format!("{e:#}"));
+        return Ok(Opening { mounted, shared_storage, closed: Vec::new() });
     }
     open_shared(service)?;
     let mut closed = Vec::new();
@@ -329,8 +351,8 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
         }
     }
     let closed = open_made_up(service, closed, &owner);
-    let _ = show_owner_storage();
-    Ok(Opening { mounted, closed })
+    let shared_storage = show_owner_storage().err().map(|e| format!("{e:#}"));
+    Ok(Opening { mounted, shared_storage, closed })
 }
 
 /// Open the own files of `user` with what they typed at their screen lock
