@@ -7,7 +7,13 @@ soc = { hans = "骁龙 888 移动平台", hant = "Snapdragon® 888 行動平台"
 os_version_prop = "ro.mi.os.version.incremental"
 
 [display]
-# The system starts in the lower mode of the panel: 1080 by 2400 at 420.
+# What the panel is: 1440 by 3200 at 120 frames a second, read off this
+# phone's own log of the display engine (`msm_drm`: hactive=1440,
+# vactive=3200, fps=120). These three lines are NOT that: they are the
+# lower mode the panel comes up in, and the program scales by 1440/1080 =
+# 1.333 before it draws, so what is on the screen is right even though the
+# number below is not the panel's own. Only the source was wrong here; the
+# screen was not. Left as it is on purpose -- see devices/venus.md.
 width = 1080
 height = 2400
 density = 420
