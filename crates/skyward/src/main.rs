@@ -756,7 +756,7 @@ const PROPERTY_FILES: [(&str, &str); 4] = [
 /// generation refuses every key of the phone's.
 #[cfg(target_os = "android")]
 fn show_property_files(slot: skyward_vab::Slot) -> Result<Vec<String>> {
-    let mut shown = Vec::new();
+    let mut said = Vec::new();
     for mounted in skyward_vab::mounted_partitions(slot)? {
         let base = mounted.partition.strip_suffix(slot.suffix()).unwrap_or(&mounted.partition).to_string();
         let Some((_, inner)) = PROPERTY_FILES.iter().find(|(named, _)| *named == base) else { continue };
@@ -765,18 +765,33 @@ fn show_property_files(slot: skyward_vab::Slot) -> Result<Vec<String>> {
         if from == to || !from.is_file() || skyward_block::mount::is_mount_point(&to).unwrap_or(false) {
             continue;
         }
-        if let Some(parent) = to.parent() {
+        // One that cannot be shown is said and left: the rest still are,
+        // and a phone whose /product/etc is a link is not a reason to leave
+        // every other partition's file where nothing looks for it.
+        match show_one_property_file(&from, &to) {
+            Ok(()) => said.push(format!("{} is shown at {}", from.display(), to.display())),
+            Err(e) => said.push(format!("{} is not shown at {}: {e:#}", from.display(), to.display())),
+        }
+    }
+    Ok(said)
+}
+
+/// Show one file where a program of the installed system looks for it.
+#[cfg(target_os = "android")]
+fn show_one_property_file(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        // A place that is already there is the place wanted, whether it is
+        // a directory or a link to one.
+        if !parent.exists() {
             std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
         }
-        // The place has to be a file before something can be shown over it;
-        // one that already holds something is left as it is under the mount.
-        if !to.exists() {
-            std::fs::File::create(&to).with_context(|| format!("make {}", to.display()))?;
-        }
-        skyward_block::mount::bind(&from, &to).with_context(|| format!("show {} at {}", from.display(), to.display()))?;
-        shown.push(format!("{} is shown at {}", from.display(), to.display()));
     }
-    Ok(shown)
+    // The place has to be a file before something can be shown over it;
+    // one that already holds something is left as it is under the mount.
+    if !to.exists() {
+        std::fs::File::create(to).with_context(|| format!("make {}", to.display()))?;
+    }
+    skyward_block::mount::bind(from, to)
 }
 
 /// The switch that has the kernel pass the firmware requests it cannot
