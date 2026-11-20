@@ -59,7 +59,9 @@ pub struct Policy {
 /// guessed here: asking with the wrong one is answered with ENOTTY, and a
 /// caller that takes any failure for "not encrypted" reads every encrypted
 /// directory as plain.
+#[cfg(target_os = "android")]
 const GET_POLICY_EX: u32 = 0xc008_6613;
+#[cfg(target_os = "android")]
 const POLICY_BYTES: usize = 24;
 
 /// How `dir` is encrypted, or `None` where it is not.
