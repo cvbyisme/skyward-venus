@@ -195,9 +195,8 @@ pub fn show_owner_storage() -> Result<()> {
     // Only an answer that says the key is not in stops it: a question that
     // cannot be answered at all is a kernel that does not speak this way of
     // encryption, which is a phone that does not encrypt.
-    match crate::fscrypt::unlocked(Path::new(SHARED_STORAGE)) {
-        Ok(false) => anyhow::bail!("the shared storage is encrypted and its key is not in, so it is not shown at {SDCARD}"),
-        _ => {}
+    if let Ok(false) = crate::fscrypt::unlocked(Path::new(SHARED_STORAGE)) {
+        anyhow::bail!("the shared storage is encrypted and its key is not in, so it is not shown at {SDCARD}");
     }
     match crate::fscrypt::readable(&from) {
         true => mount::bind(&from, &to).with_context(|| format!("show {} at {}", from.display(), to.display())),
