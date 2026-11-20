@@ -34,6 +34,8 @@ mod repack;
 #[cfg(target_os = "android")]
 mod secure;
 #[cfg(target_os = "android")]
+mod selfstated;
+#[cfg(target_os = "android")]
 mod services;
 #[cfg(target_os = "android")]
 mod settings;
@@ -535,7 +537,19 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
             skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
         }
     }
-    let services: Vec<_> = cfg.services.iter().filter(|s| s.runs_on(&props)).cloned().collect();
+    let mut services: Vec<_> = cfg.services.iter().filter(|s| s.runs_on(&props)).cloned().collect();
+    // A configuration written from another phone's build names key services
+    // this one has never had, and the ones it does have are the ones that
+    // matter here: what the phone's own init files and manifests describe is
+    // taken up, and what nothing on this phone serves is said plainly.
+    match selfstated::add_missing(&mut services) {
+        Ok(said) => {
+            for line in said {
+                skyward_sys::kmsg(&line)?;
+            }
+        }
+        Err(e) => skyward_sys::kmsg(&format!("the phone's own service files were not read: {e:#}"))?,
+    }
     // The drivers ask for their firmware by name, and the kernel looks only
     // in folders of its own unless told to pass on what it does not find
     // there to ueventd, which looks in the recovery's firmware folders.

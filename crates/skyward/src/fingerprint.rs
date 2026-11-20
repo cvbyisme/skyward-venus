@@ -24,7 +24,7 @@ const FSTABS: [&str; 6] = [
 
 /// The properties that say which build of Android and of the vendor code
 /// this phone is, and how its bootloader was left.
-const PROPS: [&str; 9] = [
+const PROPS: [&str; 11] = [
     "ro.build.version.release",
     "ro.build.version.security_patch",
     "ro.vendor.build.security_patch",
@@ -34,6 +34,8 @@ const PROPS: [&str; 9] = [
     "ro.boot.slot_suffix",
     "ro.crypto.state",
     "ro.crypto.type",
+    "ro.boot.os_version",
+    "ro.boot.patch_level",
 ];
 
 /// The filesystems that hold the keys, and what each needs to be there.
@@ -103,7 +105,7 @@ pub fn log(props: &HashMap<String, String>) -> Result<()> {
     for (name, size, used) in modules().into_iter().take(64) {
         say(&format!("fingerprint:   module {name} {size} bytes, {used}"));
     }
-    if let Some((version, patch)) = boot_header() {
+    if let Some((version, patch)) = boot_header(props) {
         say(&format!("fingerprint: the boot header says OS {version}, patch level {patch}"));
     }
     Ok(())
@@ -249,14 +251,32 @@ fn modules() -> Vec<(String, u64, String)> {
 }
 
 /// What the boot image the phone started from says about its own
-/// generation, which the system's and the vendor's patch levels are
-/// checked against when a key is unwrapped.
-fn boot_header() -> Option<(String, String)> {
+/// generation, read from the bytes the bootloader read rather than from a
+/// library's view of them: a key the secure world unwraps is checked
+/// against this, so it is worth having as the image itself has it.
+fn boot_header(props: &HashMap<String, String>) -> Option<(String, String)> {
     let slot = skyward_sys::prop("ro.boot.slot_suffix").unwrap_or_default();
     let path = Path::new(skyward_block::BY_NAME).join(format!("boot{slot}"));
-    let header = skyward_bootimg::BootImage::header(&path).ok()?;
-    let os = header.os_version;
+    // Only the page the header is written in: this phone's boot partition
+    // holds two hundred megabytes of kernel and ramdisk after it.
+    let mut head = vec![0u8; 4096];
+    {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path).ok()?;
+        let read = file.read(&mut head).ok()?;
+        head.truncate(read);
+    }
+    if head.len() < 64 || &head[..8] != b"ANDROID!" {
+        return None;
+    }
+    // The version and the patch level are one number in the header: the
+    // release, then the two halves of the patch level, then the year and the
+    // month after 2000.
+    let os = u32::from_le_bytes(head[16..20].try_into().expect("four bytes"));
     let version = format!("{}.{}.{}", os >> 25, (os >> 18) & 0x7f, (os >> 11) & 0x7f);
-    let patch = format!("{}-{:02}", 2000 + ((os >> 4) & 0x7f), os & 0xf);
+    let patch = match props.get("ro.boot.os_version").or_else(|| props.get("ro.boot.patch_level")) {
+        Some(said) if !said.is_empty() => said.clone(),
+        _ => format!("{}-{:02}", 2000 + ((os >> 4) & 0x7f), os & 0xf),
+    };
     Some((version, patch))
 }
