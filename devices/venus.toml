@@ -69,6 +69,12 @@ server = "https://update.miui.com/updates/miotaV3.php"
 [partitions]
 mounted = ["persist", "metadata"]
 
+# The key services below are the ones this phone's own build has: the older
+# kind of each, over the hardware services' directory. A build of the phone
+# with the newer kind instead is not listed here, because this phone has
+# none of those programs; the recovery reads the phone's own init files and
+# manifests for whatever else holds a key, and starts that.
+#
 # The secure world reaches back into Android through the listeners this
 # daemon registers; without them the key service cannot use any key.
 [[service]]
@@ -82,25 +88,6 @@ groups = ["root", "drmrpc"]
 # Android 13 keep their keys through this one instead, and it speaks over the
 # ordinary binder rather than the hardware one. Its own program registers it,
 # so it needs nothing else to be up first.
-[[service]]
-path = "/vendor/bin/hw/android.hardware.security.keymint-service-qti"
-libraries = ["/system/lib64", "/vendor/lib64"]
-ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
-user = "system"
-groups = ["system", "drmrpc"]
-
-# The credential service of the same newer kind, which those builds keep
-# beside it: it is what the secure world has check a screen lock.
-[[service]]
-path = "/vendor/bin/hw/android.hardware.gatekeeper-rust-service-qti"
-libraries = ["/system/lib64", "/vendor/lib64"]
-ready_service = "android.hardware.gatekeeper.IGatekeeper/default"
-user = "system"
-groups = ["system"]
-
-# The directory the phone's hardware services of the older kind register
-# with. A recovery carries none of it, so it is the installed system's own,
-# which reads the descriptions in /vendor/etc/vintf.
 [[service]]
 path = "/mnt/system_ext/bin/hwservicemanager"
 libraries = ["/mnt/system/system/lib64/bootstrap", "/mnt/system/system/lib64", "/mnt/system_ext/lib64"]
