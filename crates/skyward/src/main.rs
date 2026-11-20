@@ -606,6 +606,14 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
         }
         skyward_sys::kmsg(&format!("{name} is mounted on {}", at.display()))?;
     }
+    match show_property_files(slot) {
+        Ok(shown) => {
+            for line in shown {
+                skyward_sys::kmsg(&line)?;
+            }
+        }
+        Err(e) => skyward_sys::kmsg(&format!("the installed system's build.prop files were not shown where its programs look: {e:#}"))?,
+    }
     // A module the kernel refuses, as when the boot partition holds a
     // kernel the modules were not built for, still leaves the phone's own
     // programs to be started: opening the data partition needs them more
@@ -728,6 +736,46 @@ fn agree_on_the_notes_key(registered: &[String]) -> Result<()> {
 /// phone numbers its own from nothing upwards.
 #[cfg(target_os = "android")]
 const NOBODY: u32 = u32::MAX;
+
+/// Where the installed system keeps the file saying which build it is,
+/// under each of its partitions, and where a program started here looks for
+/// it. Only the file is shown at the standard place: the partition itself
+/// stays where the recovery put it, because /system also holds the
+/// recovery's own libraries.
+const PROPERTY_FILES: [(&str, &str); 4] = [
+    ("system", "build.prop"),
+    ("system_ext", "etc/build.prop"),
+    ("product", "etc/build.prop"),
+    ("odm", "etc/build.prop"),
+];
+
+/// Show each partition's build.prop at the place its own programs look for
+/// it, without moving the partition: a program of the installed system
+/// reads its generation from there, and a key service that finds no
+/// generation refuses every key of the phone's.
+fn show_property_files(slot: skyward_vab::Slot) -> Result<Vec<String>> {
+    let mut shown = Vec::new();
+    for mounted in skyward_vab::mounted_partitions(slot)? {
+        let base = mounted.partition.strip_suffix(slot.suffix()).unwrap_or(&mounted.partition).to_string();
+        let Some((_, inner)) = PROPERTY_FILES.iter().find(|(named, _)| *named == base) else { continue };
+        let from = mounted.mount_point.join(inner);
+        let to = Path::new("/").join(&base).join(inner);
+        if from == to || !from.is_file() || skyward_block::mount::is_mount_point(&to).unwrap_or(false) {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
+        }
+        // The place has to be a file before something can be shown over it;
+        // one that already holds something is left as it is under the mount.
+        if !to.exists() {
+            std::fs::File::create(&to).with_context(|| format!("make {}", to.display()))?;
+        }
+        skyward_block::mount::bind(&from, &to).with_context(|| format!("show {} at {}", from.display(), to.display()))?;
+        shown.push(format!("{} is shown at {}", from.display(), to.display()));
+    }
+    Ok(shown)
+}
 
 /// The switch that has the kernel pass the firmware requests it cannot
 /// answer itself on to ueventd.

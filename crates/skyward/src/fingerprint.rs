@@ -100,6 +100,10 @@ pub fn log(props: &HashMap<String, String>) -> Result<()> {
     for (what, at) in [("the firmware", "/vendor/firmware_mnt"), ("the settings", "/mnt/vendor/persist"), ("the metadata", "/metadata")] {
         say(&format!("fingerprint: {what} at {at} {}", if mounted(at) { "is mounted" } else { "is not mounted" }));
     }
+    say("fingerprint: the properties a started program of the installed system sees");
+    for (key, said) in props_as_a_started_program_sees_them() {
+        say(&format!("fingerprint:   {key} = {said}"));
+    }
     say(&format!("fingerprint: the kernel is {}", kernel()));
     say(&format!("fingerprint: {} modules are loaded", modules().len()));
     for (name, size, used) in modules().into_iter().take(64) {
@@ -109,6 +113,42 @@ pub fn log(props: &HashMap<String, String>) -> Result<()> {
         say(&format!("fingerprint: the boot header says OS {version}, patch level {patch}"));
     }
     Ok(())
+}
+
+/// The properties the installed system keeps, read through one of its own
+/// programs so that what comes back is what a started program sees -- the
+/// property service's own answer rather than a file read by hand. A key
+/// service checks the generation it finds here against the one the key was
+/// made under, and a service that finds nothing here refuses the key.
+pub fn props_as_a_started_program_sees_them() -> Vec<(String, String)> {
+    const KEYS: [&str; 5] = [
+        "ro.build.version.release",
+        "ro.build.version.security_patch",
+        "ro.vendor.build.security_patch",
+        "ro.build.version.sdk",
+        "ro.vndk.version",
+    ];
+    let candidates = ["/system/bin/getprop", "/mnt/system/system/bin/getprop", "/mnt/system/bin/getprop"];
+    let Some(getprop) = candidates.iter().find(|p| Path::new(p).is_file()) else {
+        return vec![("(nothing to ask)".into(), "no getprop of the installed system is readable here".into())];
+    };
+    KEYS.iter()
+        .map(|key| {
+            let said = match std::process::Command::new(getprop).arg(key).output() {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    let wrong = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    match (text.is_empty(), wrong.is_empty()) {
+                        (true, false) => format!("(nothing; {wrong})"),
+                        (true, true) => "(nothing)".to_string(),
+                        (false, _) => text,
+                    }
+                }
+                Err(e) => format!("(could not ask: {e})"),
+            };
+            (key.to_string(), said)
+        })
+        .collect()
 }
 
 /// Write a line where the exported log and the kernel log both keep it.
