@@ -444,7 +444,7 @@ impl<'a> Keymaster<'a> {
                 let code = read.status().map(|()| 0).unwrap_or_else(|_| -1);
                 let said = self.hardware();
                 check.steps.push(started("what the service says it is", &ask, Some(reply.bytes()), code, t0.elapsed().as_millis(), match &said {
-                    Ok(h) => format!("{h.name} version {h.version} at security level {h.security_level} by {h.author}"),
+                    Ok(h) => format!("{} version {} at security level {} by {}", h.name, h.version, h.security_level, h.author),
                     Err(e) => format!("{e:#}"),
                 }));
                 check.hardware = said.ok();
