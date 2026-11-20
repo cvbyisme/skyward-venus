@@ -12,7 +12,9 @@ use crate::token::Token;
 use anyhow::{bail, Context, Result};
 use skyward_binder::driver::{Binder, Handle};
 use skyward_binder::hidl::{self, Answer, Message};
+use skyward_binder::parcel::Payload;
 use skyward_binder::status::Fault;
+use std::time::Instant;
 
 /// The newest version of the service, and the one before it: a phone whose
 /// system is recent enough for keystore2 still serves this kind of key
@@ -24,14 +26,33 @@ const INSTANCE: &str = "default";
 /// service was reached by.
 const GENERATION: i32 = 4;
 
-/// The methods, numbered in the order the interface declares them.
+/// The methods, numbered in the order the interface declares them, which
+/// is the order the generated interface's transaction codes follow:
+///
+/// ```text
+///  1 getHardwareInfo            9 upgradeKey
+///  2 addRngEntropy             10 deleteKey
+///  3 generateKey               11 deleteAllKeys
+///  4 importKey                 12 destroyAttestationIds
+///  5 importWrappedKey          13 begin
+///  6 getKeyCharacteristics     14 update
+///  7 exportKey                 15 finish
+///  8 attestKey                 16 abort
+/// ```
+///
+/// The numbers this file used were three higher from `getKeyCharacteristics`
+/// on, so `begin` was sent to the method that aborts an operation and the
+/// renewing of a key that needs it was sent to the one that destroys the
+/// hardware's attestation ids. Every call there is worth anything has to
+/// carry the number the interface gives it.
 const GET_HARDWARE_INFO: u32 = 1;
-const GET_KEY_CHARACTERISTICS: u32 = 9;
-const UPGRADE_KEY: u32 = 12;
-const BEGIN: u32 = 16;
-const UPDATE: u32 = 17;
-const FINISH: u32 = 18;
-const ABORT: u32 = 19;
+const GENERATE_KEY: u32 = 3;
+const GET_KEY_CHARACTERISTICS: u32 = 6;
+const UPGRADE_KEY: u32 = 9;
+const BEGIN: u32 = 13;
+const UPDATE: u32 = 14;
+const FINISH: u32 = 15;
+const ABORT: u32 = 16;
 
 /// How far a tag is shifted to say what kind of value it carries. The tags
 /// are the same numbers the newer key service uses, which is why they look
@@ -41,15 +62,32 @@ const TAG_TYPE: u32 = 28;
 const KIND_ENUM: u32 = 1;
 const KIND_UINT: u32 = 3;
 const KIND_BYTES: u32 = 9;
+const KIND_BOOL: u32 = 8;
 
 const TAG_PURPOSE: u32 = (KIND_ENUM << TAG_TYPE) | 1;
+const TAG_ALGORITHM: u32 = (KIND_ENUM << TAG_TYPE) | 2;
+const TAG_KEY_SIZE: u32 = (KIND_UINT << TAG_TYPE) | 3;
+const TAG_DIGEST: u32 = (KIND_ENUM << TAG_TYPE) | 5;
+const TAG_NO_AUTH_REQUIRED: u32 = (KIND_BOOL << TAG_TYPE) | 503;
+const TAG_CALLER_NONCE: u32 = (KIND_BOOL << TAG_TYPE) | 7;
 const TAG_BLOCK_MODE: u32 = (KIND_ENUM << TAG_TYPE) | 4;
 const TAG_PADDING: u32 = (KIND_ENUM << TAG_TYPE) | 6;
 const TAG_MAC_LENGTH: u32 = (KIND_UINT << TAG_TYPE) | 1003;
 const TAG_APPLICATION_ID: u32 = (KIND_BYTES << TAG_TYPE) | 601;
 const TAG_NONCE: u32 = (KIND_BYTES << TAG_TYPE) | 1001;
 
-const PURPOSE_DECRYPT: u32 = 1;
+/// The purposes a key may be made for, as the one bit each of them is:
+/// a key made for two of them carries both bits, and a call that says the
+/// wrong one is refused rather than served.
+const PURPOSE_ENCRYPT: u32 = 1;
+const PURPOSE_DECRYPT: u32 = 2;
+const ALGORITHM_AES: u32 = 32;
+const DIGEST_NONE: u32 = 0;
+const KEY_BITS: u64 = 256;
+/// The nonce the self check gives, which is what the caller-nonce flag on
+/// the key allows: the same one for both directions, so that what is put in
+/// under it can be taken out under it.
+const CHECK_NONCE: [u8; NONCE_BYTES] = [0x5a; NONCE_BYTES];
 const BLOCK_MODE_GCM: u32 = 32;
 const PADDING_NONE: u32 = 1;
 const MAC_BITS: u64 = 128;
@@ -378,4 +416,224 @@ impl<'a> Keymaster<'a> {
     pub fn ephemeral_storage_key(&self, key: &[u8]) -> Result<Vec<u8>> {
         Ok(key.to_vec())
     }
+
+    /// Ask the secure world to do the one thing this program needs of it,
+    /// on a key made only for the asking: make an AES-GCM key that no
+    /// screen lock guards, encrypt something with it, and decrypt the
+    /// result back. Nothing of the phone's own is touched, and every step
+    /// is reported with the number it answered and the bytes it was sent
+    /// and sent back, so a step that fails says whether the far side
+    /// refused or this side wrote the call wrong.
+    pub fn check(&self) -> Check {
+        let mut check = Check { steps: Vec::new(), hardware: None, key_bytes: 0, plain: Vec::new(), round_trip: None };
+        let started = |what: &'static str, ask: &Message, answer: Option<&[u8]>, code: i32, ms: u128, note: String| Step {
+            what,
+            code,
+            ms,
+            note,
+            ask: hex(ask.values()),
+            answer: answer.map(hex).unwrap_or_else(|| "(no answer)".to_string()),
+        };
+        // What the service says it is: one call that changes nothing, and
+        // the one call the numbers of this file are read against.
+        let t0 = Instant::now();
+        let ask = Message::call(self.name);
+        match self.device.transact(GET_HARDWARE_INFO, &ask) {
+            Ok(reply) => {
+                let mut read = Answer::new(reply.bytes());
+                let code = read.status().map(|()| 0).unwrap_or_else(|_| -1);
+                let said = self.hardware();
+                check.steps.push(started("what the service says it is", &ask, Some(reply.bytes()), code, t0.elapsed().as_millis(), match &said {
+                    Ok(h) => format!("{h.name} version {h.version} at security level {h.security_level} by {h.author}"),
+                    Err(e) => format!("{e:#}"),
+                }));
+                check.hardware = said.ok();
+            }
+            Err(e) => check.steps.push(started("what the service says it is", &ask, None, -1, t0.elapsed().as_millis(), format!("{e:#}"))),
+        }
+        // A key of this kind, with no screen lock guarding it and the
+        // caller giving the nonce: the two things that decide whether the
+        // call itself is written as the interface wants it.
+        let t0 = Instant::now();
+        let mut ask = Message::call(self.name);
+        params(
+            &mut ask,
+            &[
+                Param::Number(TAG_PURPOSE, u64::from(PURPOSE_ENCRYPT | PURPOSE_DECRYPT)),
+                Param::Choice(TAG_ALGORITHM, ALGORITHM_AES),
+                Param::Number(TAG_KEY_SIZE, KEY_BITS),
+                Param::Choice(TAG_BLOCK_MODE, BLOCK_MODE_GCM),
+                Param::Choice(TAG_DIGEST, DIGEST_NONE),
+                Param::Choice(TAG_PADDING, PADDING_NONE),
+                Param::Number(TAG_NO_AUTH_REQUIRED, 1),
+                Param::Number(TAG_CALLER_NONCE, 1),
+                Param::Bytes(TAG_NONCE, &CHECK_NONCE),
+            ],
+        );
+        let mut key = Vec::new();
+        match self.device.transact(GENERATE_KEY, &ask) {
+            Ok(reply) => {
+                let mut read = Answer::new(reply.bytes());
+                let code = match refused(&mut read, "make a key") {
+                    Ok(()) => 0,
+                    Err(e) => skyward_binder::status::refused_with(&e).unwrap_or(-1),
+                };
+                if code == 0 {
+                    let _ = read.pair_count();
+                    key = read.pair().map(<[u8]>::to_vec).unwrap_or_default();
+                    // The characteristics the service hands back are three
+                    // runs of parameters, which nothing here reads.
+                    for _ in 0..3 {
+                        let _ = read.pair_count();
+                    }
+                }
+                check.key_bytes = key.len();
+                check.steps.push(started("a key of this kind made for the asking", &ask, Some(reply.bytes()), code, t0.elapsed().as_millis(), format!("{} bytes of key", key.len())));
+            }
+            Err(e) => check.steps.push(started("a key of this kind made for the asking", &ask, None, -1, t0.elapsed().as_millis(), format!("{e:#}"))),
+        }
+        if key.is_empty() {
+            return check;
+        }
+        // What is put in, and what should come back out of it.
+        let plain: Vec<u8> = (0..64u8).map(|i| i.wrapping_mul(7).wrapping_add(3)).collect();
+        check.plain = plain.clone();
+        let operation = |check: &mut Check, encrypt: bool, key: &[u8], input: &[u8]| -> Vec<u8> {
+            let t0 = Instant::now();
+            let mut ask = Message::call(self.name);
+            ask.u32(if encrypt { PURPOSE_ENCRYPT } else { PURPOSE_DECRYPT });
+            ask.bytes(key);
+            let run = [
+                Param::Choice(TAG_BLOCK_MODE, BLOCK_MODE_GCM),
+                Param::Choice(TAG_PADDING, PADDING_NONE),
+                Param::Choice(TAG_DIGEST, DIGEST_NONE),
+                Param::Number(TAG_MAC_LENGTH, MAC_BITS),
+                Param::Bytes(TAG_NONCE, &CHECK_NONCE),
+            ];
+            params(&mut ask, &run);
+            auth_note(&mut ask, None);
+            let named = if encrypt { "an encryption opened on it" } else { "a decryption opened on it" };
+            let mut handle = 0u64;
+            match self.device.transact(BEGIN, &ask) {
+                Ok(reply) => {
+                    let mut read = Answer::new(reply.bytes());
+                    let code = match refused(&mut read, named) {
+                        Ok(()) => 0,
+                        Err(e) => skyward_binder::status::refused_with(&e).unwrap_or(-1),
+                    };
+                    if code == 0 {
+                        let _ = read.pair_count();
+                        handle = read.u64().unwrap_or_default();
+                    }
+                    check.steps.push(started(named, &ask, Some(reply.bytes()), code, t0.elapsed().as_millis(), format!("operation {handle}")));
+                }
+                Err(e) => check.steps.push(started(named, &ask, None, -1, t0.elapsed().as_millis(), format!("{e:#}"))),
+            }
+            if handle == 0 {
+                return Vec::new();
+            }
+            let t0 = Instant::now();
+            let mut ask = Message::call(self.name);
+            ask.u64(handle);
+            params(&mut ask, &[]);
+            ask.bytes(input);
+            auth_note(&mut ask, None);
+            nothing_checked(&mut ask);
+            let mut out = Vec::new();
+            match self.device.transact(UPDATE, &ask) {
+                Ok(reply) => {
+                    let mut read = Answer::new(reply.bytes());
+                    let code = match refused(&mut read, "feed it") {
+                        Ok(()) => 0,
+                        Err(e) => skyward_binder::status::refused_with(&e).unwrap_or(-1),
+                    };
+                    if code == 0 {
+                        let _ = read.u32();
+                        let _ = read.pair_count();
+                        out = read.pair().map(<[u8]>::to_vec).unwrap_or_default();
+                    }
+                    check.steps.push(started("feed it", &ask, Some(reply.bytes()), code, t0.elapsed().as_millis(), format!("{} bytes back", out.len())));
+                }
+                Err(e) => check.steps.push(started("feed it", &ask, None, -1, t0.elapsed().as_millis(), format!("{e:#}"))),
+            }
+            let t0 = Instant::now();
+            let mut ask = Message::call(self.name);
+            ask.u64(handle);
+            params(&mut ask, &[]);
+            ask.bytes(&[]);
+            ask.bytes(&[]);
+            auth_note(&mut ask, None);
+            nothing_checked(&mut ask);
+            match self.device.transact(FINISH, &ask) {
+                Ok(reply) => {
+                    let mut read = Answer::new(reply.bytes());
+                    let code = match refused(&mut read, "close it") {
+                        Ok(()) => 0,
+                        Err(e) => skyward_binder::status::refused_with(&e).unwrap_or(-1),
+                    };
+                    if code == 0 {
+                        let _ = read.pair_count();
+                        out.extend_from_slice(read.pair().unwrap_or_default());
+                    }
+                    check.steps.push(started("close it", &ask, Some(reply.bytes()), code, t0.elapsed().as_millis(), format!("{} bytes back in all", out.len())));
+                }
+                Err(e) => check.steps.push(started("close it", &ask, None, -1, t0.elapsed().as_millis(), format!("{e:#}"))),
+            }
+            out
+        };
+        let sealed = operation(&mut check, true, &key, &plain);
+        if sealed.is_empty() {
+            return check;
+        }
+        // The secure world only hands the plaintext back for the right key
+        // and the right nonce, so what comes out being what went in is the
+        // proof that everything between here and the hardware works.
+        let opened = operation(&mut check, false, &key, &sealed);
+        check.round_trip = Some(opened == plain);
+        check
+    }
+}
+
+/// One call of a self check, with what it was sent and what came back.
+pub struct Step {
+    pub what: &'static str,
+    pub code: i32,
+    pub ms: u128,
+    pub note: String,
+    ask: String,
+    answer: String,
+}
+
+impl Step {
+    /// What the call was sent, as the bytes the driver carried, and what
+    /// came back. The far side names its refusal in the first four bytes of
+    /// its answer, which is where a code that is neither one of its own nor
+    /// an errno shows itself as a call written wrong.
+    pub fn said(&self) -> (&str, &str) {
+        (&self.ask, &self.answer)
+    }
+}
+
+/// What a self check came to.
+pub struct Check {
+    pub steps: Vec<Step>,
+    pub hardware: Option<Hardware>,
+    pub key_bytes: usize,
+    pub plain: Vec<u8>,
+    /// Whether what was encrypted came back out as it went in. `None` where
+    /// the check did not get that far.
+    pub round_trip: Option<bool>,
+}
+
+impl Check {
+    /// Whether every step answered with the code that means it worked.
+    pub fn passed(&self) -> bool {
+        self.steps.iter().all(|s| s.code == 0) && self.round_trip == Some(true)
+    }
+}
+
+/// A run of bytes as hex, for comparing what was sent with what the
+/// interface declares.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

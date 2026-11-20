@@ -193,7 +193,15 @@ enum Cmd {
     Gatekeeper,
     /// Say what the phone's weaver says of itself, which reads no slot and
     /// changes nothing.
+        /// Ask the key service to make a key of its own, seal something with
+    /// it and open it again: the one thing that says whether the way this
+    /// program writes a call to it is the way the interface declares. It
+    /// touches no key of the phone's, and every step is printed with the
+    /// number it answered and, where it failed, the bytes it was sent and
+    /// sent back.
     #[cfg(target_os = "android")]
+    TeeCheck,
+#[cfg(target_os = "android")]
     Weaver,
     /// Open the data partition with the key the phone keeps for it, check
     /// it and mount it writable as the phone does, and open each user's
@@ -402,7 +410,39 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        #[cfg(target_os = "android")]
+                #[cfg(target_os = "android")]
+        Cmd::TeeCheck => {
+            let binder = skyward_binder::driver::Binder::open()?;
+            let hardware = skyward_binder::driver::Binder::hardware()?;
+            let service = skyward_crypto::Service::open(&binder, &hardware)?;
+            let check = match &service {
+                skyward_crypto::Service::Old(keymaster) => keymaster.check(),
+                skyward_crypto::Service::New(_) => {
+                    println!("the newer key service is running, and this check is written for the older one");
+                    return Ok(());
+                }
+            };
+            for step in &check.steps {
+                let line = format!("{}: code {} in {} ms - {}", step.what, step.code, step.ms, step.note);
+                println!("{line}");
+                skyward_sys::kmsg(&format!("tee-check: {line}"))?;
+                if step.code != 0 {
+                    let (ask, answer) = step.said();
+                    println!("  sent {ask}");
+                    println!("  back {answer}");
+                    skyward_sys::kmsg(&format!("tee-check:   sent {ask}"))?;
+                    skyward_sys::kmsg(&format!("tee-check:   back {answer}"))?;
+                }
+            }
+            match check.round_trip {
+                Some(true) => println!("what was sealed came back out as it went in"),
+                Some(false) => println!("what was sealed did not come back out as it went in"),
+                None => println!("the check did not get as far as sealing anything"),
+            }
+            println!("{}", if check.passed() { "the key service can be used" } else { "the key service cannot be used as this program writes it" });
+            Ok(())
+        }
+#[cfg(target_os = "android")]
         Cmd::Weaver => {
             let binder = skyward_binder::driver::Binder::open()?;
             let c = skyward_crypto::weaver::Weaver::open(&binder)?.config()?;
