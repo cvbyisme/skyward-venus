@@ -39,48 +39,102 @@ pub fn add_key(mount: &Path, raw: &[u8], wrapped: bool) -> Result<[u8; NAME_BYTE
     Ok(name)
 }
 
+/// How a directory is encrypted, as the kernel records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Policy {
+    /// Which generation of the record this is: 1 or 2.
+    pub version: u8,
+    pub contents_mode: u8,
+    pub filenames_mode: u8,
+    pub flags: u32,
+    /// What the key is called: 16 bytes for a policy of the second kind, 8
+    /// for one of the first, padded with zeroes.
+    pub key: [u8; NAME_BYTES],
+}
+
+/// The request the kernel answers with how a directory is encrypted, and
+/// the largest record the answer holds.
+///
+/// The number in the request is the one the header works out, not a size
+/// guessed here: asking with the wrong one is answered with ENOTTY, and a
+/// caller that takes any failure for "not encrypted" reads every encrypted
+/// directory as plain.
+const GET_POLICY_EX: u32 = 0xc008_6613;
+const POLICY_BYTES: usize = 24;
+
+/// How `dir` is encrypted, or `None` where it is not.
+#[cfg(target_os = "android")]
+pub fn policy(dir: &Path) -> Result<Option<Policy>> {
+    use std::os::fd::AsRawFd;
+    let folder = std::fs::File::open(dir).with_context(|| format!("open {}", dir.display()))?;
+    let mut arg = [0u8; 8 + POLICY_BYTES];
+    arg[..8].copy_from_slice(&(POLICY_BYTES as u64).to_ne_bytes());
+    if unsafe { libc::ioctl(folder.as_raw_fd(), GET_POLICY_EX as libc::Ioctl, arg.as_mut_ptr()) } != 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ENODATA) {
+            return Ok(None);
+        }
+        return Err(e).with_context(|| format!("read how {} is encrypted", dir.display()));
+    }
+    let body = &arg[8..];
+    let version = body[0];
+    let (contents_mode, filenames_mode, flags) = (body[1], body[2], u32::from_ne_bytes(body[4..8].try_into().expect("four bytes")));
+    let mut key = [0u8; NAME_BYTES];
+    match version {
+        // The first kind of policy is shorter than the second: its key is
+        // called by eight bytes, and the rest of the record is not there.
+        0 => key[..8].copy_from_slice(&body[8..16]),
+        2 => key.copy_from_slice(&body[8..8 + NAME_BYTES]),
+        other => bail!("{} is encrypted under a policy of version {other}, which is not known here", dir.display()),
+    }
+    Ok(Some(Policy { version, contents_mode, filenames_mode, flags, key }))
+}
+
 /// Whether the names and contents under `dir` read as they are: it is not
 /// encrypted, or the key it is encrypted with is in the kernel. A user's
 /// own files read only once that user's key is let in.
 #[cfg(target_os = "android")]
 pub fn unlocked(dir: &Path) -> Result<bool> {
     use std::os::fd::AsRawFd;
-    const GET_POLICY: u32 = 0xc009_6616;
     const GET_KEY_STATUS: u32 = 0xc080_661a;
     /// How the first kind of policy names its key, and how the second does.
     const BY_DESCRIPTOR: u32 = 1;
     const BY_IDENTIFIER: u32 = 2;
-    /// The second kind of policy is the largest: its version, three bytes
-    /// of how it encrypts, four reserved, and the key's name.
-    const POLICY_BYTES: usize = 24;
+    /// Where the answer says how the key stands: after the name of the key
+    /// and the room the kernel keeps beside it.
+    const STATUS_AT: usize = 56;
     const PRESENT: u32 = 2;
-
-    let folder = std::fs::File::open(dir).with_context(|| format!("open {}", dir.display()))?;
-    let mut policy = [0u8; 8 + POLICY_BYTES];
-    policy[..8].copy_from_slice(&(POLICY_BYTES as u64).to_ne_bytes());
-    if unsafe { libc::ioctl(folder.as_raw_fd(), GET_POLICY as libc::Ioctl, policy.as_mut_ptr()) } != 0 {
-        let e = std::io::Error::last_os_error();
-        if e.raw_os_error() == Some(libc::ENODATA) {
-            return Ok(true);
-        }
-        return Err(e).with_context(|| format!("read how {} is encrypted", dir.display()));
-    }
-    let mut status = [0u8; 128];
-    match policy[8] {
+    let Some(how) = policy(dir)? else { return Ok(true) };
+    let mut ask = [0u8; 128];
+    match how.version {
         0 => {
-            status[..4].copy_from_slice(&BY_DESCRIPTOR.to_ne_bytes());
-            status[8..16].copy_from_slice(&policy[12..20]);
+            ask[..4].copy_from_slice(&BY_DESCRIPTOR.to_ne_bytes());
+            ask[8..16].copy_from_slice(&how.key[..8]);
         }
-        2 => {
-            status[..4].copy_from_slice(&BY_IDENTIFIER.to_ne_bytes());
-            status[8..8 + NAME_BYTES].copy_from_slice(&policy[16..16 + NAME_BYTES]);
+        _ => {
+            ask[..4].copy_from_slice(&BY_IDENTIFIER.to_ne_bytes());
+            ask[8..8 + NAME_BYTES].copy_from_slice(&how.key);
         }
-        other => bail!("{} is encrypted under a policy of version {other}, which is not known here", dir.display()),
     }
-    if unsafe { libc::ioctl(folder.as_raw_fd(), GET_KEY_STATUS as libc::Ioctl, status.as_mut_ptr()) } != 0 {
+    let folder = std::fs::File::open(dir).with_context(|| format!("open {}", dir.display()))?;
+    if unsafe { libc::ioctl(folder.as_raw_fd(), GET_KEY_STATUS as libc::Ioctl, ask.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error()).with_context(|| format!("ask whether the key for {} is in", dir.display()));
     }
-    Ok(u32::from_ne_bytes(status[64..68].try_into().expect("four bytes")) == PRESENT)
+    let status = u32::from_ne_bytes(ask[STATUS_AT..STATUS_AT + 4].try_into().expect("four bytes"));
+    Ok(status == PRESENT)
+}
+
+/// Whether `dir` can be listed with the names it was written with: the
+/// only proof that what a user kept there is readable.
+#[cfg(target_os = "android")]
+pub fn readable(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => match entries.next() {
+            Some(entry) => entry.is_ok(),
+            None => true,
+        },
+        Err(_) => false,
+    }
 }
 
 /// Whether what a phone says about how it encrypts its files means the

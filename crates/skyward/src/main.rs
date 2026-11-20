@@ -14,6 +14,8 @@ mod decrypt;
 #[cfg(target_os = "android")]
 mod filework;
 #[cfg(target_os = "android")]
+mod fingerprint;
+#[cfg(target_os = "android")]
 mod haptics;
 #[cfg(target_os = "android")]
 mod input;
@@ -428,6 +430,11 @@ fn main() -> Result<()> {
                 }
                 None => println!("{} is mounted already", data::MOUNT),
             }
+            match data::state() {
+                data::State::Plain => println!("nothing on this phone is encrypted"),
+                data::State::Opened => println!("the files on this phone are encrypted and every layer of them is open"),
+                data::State::Sealed { layer, why } => println!("the files on this phone are encrypted and {layer:?} is still closed: {why}"),
+            }
             let mut closed = opening.closed;
             let asked = closed.iter().find(|c| !c.made_up).map(|c| c.user);
             if let (Some(credential), Some(user)) = (&credential, asked) {
@@ -585,6 +592,12 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<()> {
         skyward_sys::kmsg(&format!("the phone's own libraries are at {}", dir.display()))?;
     }
     services::start(&services, libraries.as_deref())?;
+    // What the phone is, written down before anything is asked of it: the
+    // page that reports a failed layer says which one, and this is what
+    // says why.
+    if let Err(e) = fingerprint::log(&props) {
+        skyward_sys::kmsg(&format!("the fingerprint was not written: {e:#}"))?;
+    }
     agree_on_the_notes_key(&registering)
 }
 

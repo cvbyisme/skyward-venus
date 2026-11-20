@@ -59,8 +59,15 @@ server = "https://update.miui.com/updates/miotaV3.php"
 
 # The settings partition the phone keeps its own small state in; the recovery
 # mounts it where the phone does, as its bootloader hand-off is read there.
+#
+# The metadata partition holds the key the whole data partition is encrypted
+# with, under the directory the phone's table names for it
+# (/metadata/vold/metadata_encryption). Nothing on a phone that encrypts its
+# files can be opened until it is mounted, and the phone's own init mounts it
+# in its first stage, before anything it starts runs. It is mounted here and
+# never written.
 [partitions]
-mounted = ["persist"]
+mounted = ["persist", "metadata"]
 
 # The secure world reaches back into Android through the listeners this
 # daemon registers; without them the key service cannot use any key.

@@ -24,6 +24,20 @@ impl BootImage {
         BootImage::parse(&bytes).with_context(|| format!("read {}", path.display()))
     }
 
+    /// Just the header of the image a partition holds, without reading
+    /// the kernel or the ramdisk: what a phone says about its own
+    /// generation is written there, and a phone of this age has a kernel
+    /// far too large to read for it.
+    pub fn header(path: &Path) -> Result<HeaderV3> {
+        use std::io::Read;
+        let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut page = vec![0u8; PAGE];
+        let read = file.read(&mut page).with_context(|| format!("read {}", path.display()))?;
+        match Header::parse(&mut Cursor::new(&page[..read])).context("header")? {
+            Header::V3(h) => Ok(h),
+            Header::V0(h) => bail!("header version {} predates the ramdisk-only layout", h.header_version()),
+        }
+    }
     /// The image `bytes` hold, as a partition holds it: the image, then
     /// whatever fills the partition after it.
     pub fn parse(bytes: &[u8]) -> Result<Self> {

@@ -162,12 +162,26 @@ pub fn unmap() -> Result<()> {
 }
 
 /// Show the owner's shared storage at /sdcard; shown already, it stays.
+///
+/// What is shown is shown only where it can be read: a phone that
+/// encrypts the shared storage leaves it listing names nobody can read
+/// until the key for it is in, and showing that at /sdcard would say the
+/// files are open when they are not.
 pub fn show_owner_storage() -> Result<()> {
     let at = Path::new(SDCARD);
+    let from = Path::new(SHARED_STORAGE).join(OWNER.to_string());
     if mount::is_mount_point(at)? {
         return Ok(());
     }
-    mount::bind(&Path::new(SHARED_STORAGE).join(OWNER.to_string()), at)
+    match crate::fscrypt::unlocked(Path::new(SHARED_STORAGE)) {
+        Ok(true) => {}
+        Ok(false) => anyhow::bail!("the shared storage is encrypted and its key is not in, so it is not shown at {SDCARD}"),
+        Err(e) => return Err(e).context("ask whether the shared storage is readable"),
+    }
+    match crate::fscrypt::readable(&from) {
+        true => mount::bind(&from, at),
+        false => anyhow::bail!("{} cannot be listed, so it is not shown at {SDCARD}", from.display()),
+    }
 }
 
 /// Close what opening the partition opened, where the recovery opened it:
@@ -182,6 +196,78 @@ pub fn close() -> Result<()> {
         dm::remove(MAPPED)?;
     }
     Ok(())
+}
+
+/// A layer of the encryption that can stop the files being read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    /// The partition as a whole: the metadata key, and the mapped device
+    /// that reads through the storage hardware's decryption.
+    Whole,
+    /// The files that belong to no one user, which lie readable before
+    /// anyone signs in.
+    Shared,
+    /// One user's own files, which open only with that user's credential.
+    User(u32),
+}
+
+/// How the data partition stands, in three states rather than two: an
+/// unencrypted partition and an encrypted one whose key is in mount the
+/// same way, and only what the kernel records about the key tells them
+/// apart. Reading "mounted" as "opened" is how an encrypted phone was said
+/// to be open while every name in it was still garbage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    /// Nothing here is encrypted: what the partition holds reads as it is.
+    Plain,
+    /// Encrypted, and every layer of it is open.
+    Opened,
+    /// Encrypted, and `layer` is still closed, for `why`.
+    Sealed { layer: Layer, why: String },
+}
+
+impl State {
+    /// Whether what is under the encryption can be read.
+    pub fn opened(&self) -> bool {
+        matches!(self, State::Plain | State::Opened)
+    }
+}
+
+/// Whether the phone encrypts the files on its data partition at all. One
+/// that does keeps the key for the files nobody owns, or for each user's,
+/// on the partition itself; one that does not keeps neither.
+fn encrypted() -> bool {
+    Path::new(FILE_MODE).exists() || Path::new(USER_KEYS).join("de").is_dir()
+}
+
+/// How the data partition stands now, worked out from the kernel's own
+/// record of the keys it has and from whether the names can be listed.
+pub fn state() -> State {
+    if !encrypted() {
+        return State::Plain;
+    }
+    if !mount::is_mount_point(Path::new(MOUNT)).unwrap_or(false) {
+        return State::Sealed { layer: Layer::Whole, why: format!("{MOUNT} is not mounted") };
+    }
+    // The files nobody owns: the shared storage is the largest of them, and
+    // what the kernel says about its key is what says whether they read.
+    let shared = Path::new(SHARED_STORAGE);
+    match crate::fscrypt::unlocked(shared) {
+        Ok(true) => {}
+        Ok(false) => {
+            return State::Sealed { layer: Layer::Shared, why: format!("the key for {} is not in the kernel", shared.display()) };
+        }
+        Err(e) => return State::Sealed { layer: Layer::Shared, why: format!("{e:#}") },
+    }
+    let owner = Path::new(MOUNT).join("user").join(OWNER.to_string());
+    match crate::fscrypt::unlocked(&owner) {
+        Ok(true) => State::Opened,
+        Ok(false) => State::Sealed {
+            layer: Layer::User(OWNER),
+            why: format!("user {OWNER} has set a screen lock, and their own files have not been opened with it"),
+        },
+        Err(e) => State::Sealed { layer: Layer::User(OWNER), why: format!("{e:#}") },
+    }
 }
 
 /// A user whose own files are still closed: who, the kind of screen lock
@@ -219,8 +305,8 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
     // each file and holds none: nothing is let in, and what the partition
     // holds reads as it is.
     if !Path::new(FILE_MODE).exists() {
-        // Nothing is closed, and what /sdcard shows belongs to no user's own
-        // files, so it is shown all the same.
+        // Nothing is closed. The shared storage is shown where it can be
+        // read, as a phone that encrypts nothing can be.
         let _ = show_owner_storage();
         return Ok(Opening { mounted, closed: Vec::new() });
     }
